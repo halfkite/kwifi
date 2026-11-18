@@ -1,18 +1,21 @@
 name: release
 
-# 打 tag 时构建并发布。
+# Push a tag to publish a release.
 #
-# 如果仓库配置了 SignPath 的 Secrets/Variables，产物会被签名后再上传；
-# 没配置就发布未签名版本（并能正常跑，只是用户会看到「未知发布者」）。
+# Assets are just the one executable, named with its version, e.g.
+# kwifi-0.6.0.exe. GitHub adds the source archives automatically.
 #
-# 需要的配置（Settings → Secrets and variables → Actions）：
+# If the SignPath variables below are configured, the exe is signed first;
+# otherwise it is published unsigned (still fully functional).
+#
+# Configuration (Settings → Secrets and variables → Actions):
 #   secret   SIGNPATH_API_TOKEN
 #   variable SIGNPATH_ORGANIZATION_ID
 #   variable SIGNPATH_PROJECT_SLUG
 #   variable SIGNPATH_SIGNING_POLICY_SLUG
 #   variable SIGNPATH_ARTIFACT_CONFIGURATION_SLUG
 #
-# 详见 docs/SIGNING.md
+# See docs/SIGNING.md.
 
 on:
   push:
@@ -24,7 +27,6 @@ permissions:
 
 jobs:
   release:
-    # only real tags produce a release
     if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
     runs-on: windows-latest
     defaults:
@@ -33,6 +35,17 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: ver
+        run: |
+          $tag = '${{ github.ref_name }}'
+          $version = ($tag -replace '^v', '')
+          if (-not $version -or $version -eq 'main') {
+            $version = (Get-Content VERSION -Raw).Trim()
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          Write-Host "version: $version"
 
       - name: Install zig
         env:
@@ -52,32 +65,32 @@ jobs:
       - name: Build
         run: |
           $ErrorActionPreference = 'Stop'
-          $tag = '${{ github.ref_name }}'
-          $version = ($tag -replace '^v', '')
-          if (-not $version) { $version = '0.6.0.0' }
-          & powershell -NoProfile -ExecutionPolicy Bypass -File native\build.ps1 -Version $version -RebuildHelper
+          $v = '${{ steps.ver.outputs.version }}'
+          & powershell -NoProfile -ExecutionPolicy Bypass -File native\build.ps1 -Version $v -RebuildHelper
           if (-not (Test-Path kwifi.exe)) { throw 'kwifi.exe was not produced' }
 
-      - name: Package for signing
+      - name: Name the artifact
         id: pack
         run: |
+          $ErrorActionPreference = 'Stop'
+          $v = '${{ steps.ver.outputs.version }}'
           New-Item -ItemType Directory -Force -Path stage | Out-Null
-          Copy-Item kwifi.exe stage\
-          Copy-Item README.md,LICENSE stage\
-          Compress-Archive -Path stage\* -DestinationPath kwifi-windows-x64.zip -Force
-          "artifact=$((Resolve-Path kwifi-windows-x64.zip).Path)" >> $env:GITHUB_OUTPUT
+          Copy-Item kwifi.exe "stage\kwifi-$v.exe"
+          $hash = (Get-FileHash "stage\kwifi-$v.exe" -Algorithm SHA256).Hash.ToLower()
+          $size = (Get-Item "stage\kwifi-$v.exe").Length
+          "asset=kwifi-$v.exe" >> $env:GITHUB_OUTPUT
+          "sha256=$hash" >> $env:GITHUB_OUTPUT
+          "size=$size" >> $env:GITHUB_OUTPUT
+          Write-Host "$hash  kwifi-$v.exe  ($size bytes)"
 
-      - name: Upload unsigned artifact
-        id: upload_unsigned
+      - name: Upload for signing
+        id: upload
         uses: actions/upload-artifact@v4
         with:
           name: kwifi-unsigned
-          path: kwifi-windows-x64.zip
+          path: stage/*.exe
           if-no-files-found: error
 
-      # ---------------------------------------------------------------- signing
-      # 需要在 SignPath 后台把这个 zip 配置成 artifact configuration，
-      # 里面包含一个 kwifi.exe。
       - name: Sign with SignPath
         if: ${{ vars.SIGNPATH_PROJECT_SLUG != '' }}
         uses: signpath/github-action-submit-signing-request@v1
@@ -87,42 +100,39 @@ jobs:
           project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
           signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
           artifact-configuration-slug: ${{ vars.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG }}
-          github-artifact-id: ${{ steps.upload_unsigned.outputs.artifact-id }}
+          github-artifact-id: ${{ steps.upload.outputs.artifact-id }}
           wait-for-completion: true
           output-artifact-directory: signed
 
-      - name: Collect release files
+      - name: Collect
+        id: collect
         run: |
           $ErrorActionPreference = 'Stop'
+          $v = '${{ steps.ver.outputs.version }}'
+          $name = "kwifi-$v.exe"
           New-Item -ItemType Directory -Force -Path release | Out-Null
 
           if (Test-Path signed) {
-            $zip = Get-ChildItem signed -Filter *.zip -Recurse | Select-Object -First 1
-            if ($zip) {
-              Write-Host "using signed artifact: $($zip.FullName)"
-              Expand-Archive $zip.FullName -DestinationPath release -Force
+            $signed = Get-ChildItem signed -Filter *.exe -Recurse | Select-Object -First 1
+            if ($signed) {
+              Copy-Item $signed.FullName "release\$name" -Force
+              Write-Host "using signed build"
             }
           }
-
-          if (-not (Test-Path release\kwifi.exe)) {
-            Write-Host 'no signed artifact: publishing unsigned build'
-            Copy-Item kwifi.exe release\
-            Copy-Item README.md,LICENSE release\
+          if (-not (Test-Path "release\$name")) {
+            Copy-Item "stage\$name" "release\$name"
+            Write-Host 'publishing unsigned build'
           }
 
-          $signed = (Get-AuthenticodeSignature (Join-Path (Resolve-Path release) 'kwifi.exe')).Status
-          "signature: $signed"
-          "signature=$signed" >> $env:GITHUB_OUTPUT
-        id: collect
-
-      - name: Checksums
-        run: |
-          Push-Location release
-          $lines = Get-ChildItem -File | Where-Object { $_.Name -ne 'SHA256SUMS.txt' } |
-            ForEach-Object { "$((Get-FileHash $_.Name -Algorithm SHA256).Hash.ToLower())  $($_.Name)" }
-          $lines | Set-Content SHA256SUMS.txt
-          $lines
-          Pop-Location
+          $sig = (Get-AuthenticodeSignature "release\$name").Status
+          $hash = (Get-FileHash "release\$name" -Algorithm SHA256).Hash.ToLower()
+          $size = (Get-Item "release\$name").Length
+          "asset=$name" >> $env:GITHUB_OUTPUT
+          "signature=$sig" >> $env:GITHUB_OUTPUT
+          "sha256=$hash" >> $env:GITHUB_OUTPUT
+          "size=$size" >> $env:GITHUB_OUTPUT
+          Write-Host "signature: $sig"
+          Write-Host "sha256   : $hash"
 
       - name: Publish
         env:
@@ -130,28 +140,33 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $tag = '${{ github.ref_name }}'
-          $note = @"
-          kwifi $tag — Windows 10/11 热点控制台
+          $v = '${{ steps.ver.outputs.version }}'
+          $file = "release\kwifi-$v.exe"
+          $size = '${{ steps.collect.outputs.size }}'
+          $hash = '${{ steps.collect.outputs.sha256 }}'
+          $sig  = '${{ steps.collect.outputs.signature }}'
 
-          单个 kwifi.exe，无需安装运行时。双击运行，UAC 会请求管理员权限（热点控制需要）。
+          $notes = @"
+          Windows 热点控制台，单个可执行文件，无需安装任何运行时。
 
-          签名状态：${{ steps.collect.outputs.signature }}
+          | | |
+          |---|---|
+          | 文件 | ``kwifi-$v.exe`` |
+          | 大小 | $size 字节 |
+          | SHA-256 | ``$hash`` |
+          | 签名 | $sig |
 
-          校验：``SHA256SUMS.txt``
+          **使用**：下载后双击运行。控制热点需要管理员权限，UAC 弹窗点「是」。
+          这是单文件程序，不用安装，放到任意文件夹即可；配置和日志写在 ``%LOCALAPPDATA%\Kwifi\data``。
+
+          未签名的版本 Windows 会显示「未知发布者」，可用上面的 SHA-256 核对文件完整性。
           "@
-          $files = (Get-ChildItem release -File | Select-Object -ExpandProperty FullName)
-          gh release create $tag --title "kwifi $tag" --notes $note @files
-
-      - name: Upload signed artifact
+          gh release create $tag --title "kwifi $tag" --notes $notes $file
+      - name: Upload signed build
         if: ${{ steps.collect.outputs.signature == 'Valid' }}
         uses: actions/upload-artifact@v4
         with:
           name: kwifi-signed
-          path: release/kwifi.exe
-
-
-
-
-
+          path: release/*.exe
 
 

@@ -51,17 +51,24 @@ jobs:
           "signed : $((Get-AuthenticodeSignature kwifi.exe).Status)"
 
       - name: Package
+        id: pack
         run: |
+          $ErrorActionPreference = 'Stop'
+          $v = (Get-Content VERSION -Raw).Trim()
+          $sha = '${{ github.sha }}'.Substring(0, 7)
+          $name = "kwifi-$v-$sha.exe"
           New-Item -ItemType Directory -Force -Path out | Out-Null
-          Copy-Item kwifi.exe out\
-          Copy-Item README.md,LICENSE out\
-          (Get-FileHash kwifi.exe -Algorithm SHA256).Hash.ToLower() | Set-Content out\kwifi.exe.sha256
-          Compress-Archive -Path out\* -DestinationPath kwifi-windows-x64-unsigned.zip -Force
+          Copy-Item kwifi.exe "out\$name"
+          $hash = (Get-FileHash "out\$name" -Algorithm SHA256).Hash.ToLower()
+          "$hash  $name" | Set-Content "out\$name.sha256"
+          "asset=$name" >> $env:GITHUB_OUTPUT
+          Write-Host "$hash  $name"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: kwifi-windows-x64-unsigned
-          path: kwifi-windows-x64-unsigned.zip
+          name: ${{ steps.pack.outputs.asset }}
+          path: out/*
           if-no-files-found: error
+
 
 

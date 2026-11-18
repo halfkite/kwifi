@@ -7,12 +7,22 @@
 #   powershell -ExecutionPolicy Bypass -File native\build.ps1
 
 param(
-  [string]$Version = '0.6.0.0',
+  [string]$Version = '',
   # rebuild ttlfix.exe even if a copy is already present (CI should always do this)
   [switch]$RebuildHelper
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
+
+# VERSION at the repository root is the single source of truth
+if (-not $Version) {
+  $vf = Join-Path $root 'VERSION'
+  if (Test-Path $vf) { $Version = (Get-Content $vf -Raw).Trim() }
+  if (-not $Version) { $Version = '0.0.0' }
+}
+# Windows needs four numeric parts; "0.6.0" becomes "0.6.0.0"
+if ($Version -notmatch '^\d+\.\d+\.\d+\.\d+$') { $Version = "$Version.0" }
+Write-Host "==> version $Version"
 $env:ZIG_GLOBAL_CACHE_DIR = Join-Path $root '.zig\global'
 $env:ZIG_LOCAL_CACHE_DIR = Join-Path $root '.zig\local'
 
