@@ -123,6 +123,7 @@ ui/                  前端（原生 HTML/CSS/JS）
 tools/sign.ps1       自签名证书 + 签名（只对装过证书的机器生效）
 tools/verify-signature.ps1   查看签名状态与 SHA256
 docs/SIGNING.md      如何拿到「所有人信任」的签名
+docs/PUBLISH.md      发布到 GitHub 的步骤
 .github/workflows/   CI：构建、签名、发布
 ```
 
