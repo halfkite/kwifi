@@ -30,3 +30,5 @@
 /legacy/
 /docs/re-connectify.md
 *.pdb
+# local per-build archive
+/builds/

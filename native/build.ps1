@@ -1,15 +1,23 @@
 # Build kwifi.exe: native shell + embedded UI + backend (no Node runtime).
 #
-#   kwifi.exe   - tray, WebView2 window and the HTTP backend, ~1 MB
+#   kwifi.exe   - tray, WebView2 window and the HTTP backend
 #   ttlfix.exe  - data plane helper (embedded into kwifi.exe as well)
+#
+# Every build is also archived under builds\<timestamp>-<version>\ so older
+# binaries can be compared or rolled back without rebuilding.
 #
 # Requires zig in PATH. Usage:
 #   powershell -ExecutionPolicy Bypass -File native\build.ps1
+#   ... -NoArchive        skip the archive folder
+#   ... -ArchiveRoot D:\kwifi-builds    archive somewhere else
 
 param(
   [string]$Version = '',
   # rebuild ttlfix.exe even if a copy is already present (CI should always do this)
-  [switch]$RebuildHelper
+  [switch]$RebuildHelper,
+  # where to keep the per-build copies; defaults to <repo>\builds
+  [string]$ArchiveRoot = '',
+  [switch]$NoArchive
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
@@ -20,6 +28,7 @@ if (-not $Version) {
   if (Test-Path $vf) { $Version = (Get-Content $vf -Raw).Trim() }
   if (-not $Version) { $Version = '0.0.0' }
 }
+$displayVersion = $Version
 # Windows needs four numeric parts; "0.6.0" becomes "0.6.0.0"
 if ($Version -notmatch '^\d+\.\d+\.\d+\.\d+$') { $Version = "$Version.0" }
 Write-Host "==> version $Version"
@@ -67,6 +76,7 @@ try {
   }
   & (Join-Path $PSScriptRoot 'respatch.exe') $exePath (Join-Path $PSScriptRoot 'app.manifest') (Join-Path $PSScriptRoot 'app.ico') $Version 'kwifi hotspot console'
   if ($LASTEXITCODE -ne 0) { throw "resource patch failed (exit $LASTEXITCODE)" }
+
   $bytes = [System.IO.File]::ReadAllBytes($exePath)
   $peOff = [BitConverter]::ToInt32($bytes, 0x3C) + 24 + 68
   if ([BitConverter]::ToUInt16($bytes, $peOff) -ne 2) {
@@ -76,10 +86,39 @@ try {
     Write-Host '    subsystem -> windows (no console window)'
   }
 
+  # ---------------------------------------------------------------- archive
+  if (-not $NoArchive) {
+    if (-not $ArchiveRoot) { $ArchiveRoot = Join-Path $root 'builds' }
+    $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+    $dir = Join-Path $ArchiveRoot "$stamp-$displayVersion"
+    New-Item -ItemType Directory -Force -Path $dir | Out-Null
+
+    $archived = Join-Path $dir 'kwifi.exe'
+    Copy-Item $exePath $archived -Force
+
+    $hash = (Get-FileHash $archived -Algorithm SHA256).Hash.ToLower()
+    $commit = ''
+    try { $commit = (& git -C $root rev-parse --short HEAD 2>$null) } catch { }
+    if (-not $commit) { $commit = '(no git)' }
+    $dirty = ''
+    try {
+      if ((& git -C $root status --porcelain 2>$null)) { $dirty = ' (working tree dirty)' }
+    } catch { }
+
+    $lines = @(
+      "version : $displayVersion",
+      "built   : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')",
+      "commit  : $commit$dirty",
+      "size    : $((Get-Item $archived).Length) bytes",
+      "sha256  : $hash"
+    )
+    $lines | Set-Content (Join-Path $dir 'build.txt') -Encoding UTF8
+    Write-Host "==> archived"
+    Write-Host "    $dir"
+  }
+
   Get-Item $exePath, (Join-Path $PSScriptRoot 'win\ttlfix.exe') |
     Select-Object FullName, @{n = 'KB'; e = { [math]::Round($_.Length / 1KB) } }
 } finally {
   Pop-Location
 }
-
-
