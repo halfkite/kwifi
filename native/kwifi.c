@@ -971,11 +971,45 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
     return DefWindowProcW(hwnd, msg, wParam, lParam);
 }
 
+/* a replaced exe cannot take over: the old process keeps serving the page baked
+   into itself, so a user who swapped the file still runs the old build. Warn
+   instead of silently raising the stale window. */
+static void warn_version_mismatch(void)
+{
+    char body[1024] = {0};
+    if (!http_call(L"GET", L"/api/health", NULL, body, sizeof(body))) return;
+
+    /* http_call returns the raw ASCII body */
+    char *p = strstr(body, "\"app\":\"");
+    if (!p) return;
+    p += 7;
+    char running[64] = {0};
+    int i = 0;
+    while (*p && *p != '"' && i < 63) running[i++] = *p++;
+
+    if (_stricmp(running, APP_VERSION) == 0) return;
+
+    wchar_t wrunning[64] = {0};
+    wchar_t mine[64] = {0};
+    MultiByteToWideChar(CP_UTF8, 0, running[0] ? running : "unknown", -1, wrunning, 64);
+    MultiByteToWideChar(CP_UTF8, 0, APP_VERSION, -1, mine, 64);
+
+    wchar_t msg[1024];
+    _snwprintf(msg, 1024,
+               L"已经有一个旧版本在运行（%ls），当前程序是 %ls。\n\n"
+               L"旧窗口里显示的仍然是旧界面，改动不会生效。\n"
+               L"请先在托盘右键「退出」（或用任务管理器结束 kwifi.exe），"
+               L"再重新启动这个版本。\n",
+               wrunning, mine);
+    MessageBoxW(NULL, msg, APP_TITLE, MB_ICONWARNING | MB_OK);
+}
+
 static BOOL already_running(void)
 {
     /* Local\ works for a non-elevated launch too; Global\ needs SeCreateGlobalPrivilege */
     HANDLE mutex = CreateMutexW(NULL, TRUE, L"Local\\KwifiShell");
     if (mutex && GetLastError() == ERROR_ALREADY_EXISTS) {
+        warn_version_mismatch();
         HWND existing = FindWindowW(L"KwifiTrayWnd", NULL);
         if (existing) PostMessageW(existing, WM_COMMAND, 1, 0);
         return TRUE;
