@@ -678,19 +678,19 @@ static void open_ui(void)
     wchar_t url[128];
     _snwprintf(url, 128, L"http://127.0.0.1:%u/", (unsigned)g_port);
 
-    /* WebView2 needs a writable profile folder. LOCALAPPDATA is the reliable
-       place for it: the data folder may be a fallback (temp) or read-only, and
-       WebView2 fails with E_UNEXPECTED rather than degrading. */
+    /* WebView2 needs a writable profile folder. Keep it inside the data folder,
+       which is known to be writable (the backend already writes there), and only
+       fall back to LOCALAPPDATA when that cannot be created. */
     wchar_t profile[MAX_PATH * 2];
-    {
+    _snwprintf(profile, MAX_PATH * 2, L"%s\\webview", g_data);
+    mkdirs(profile);
+    if (GetFileAttributesW(profile) == INVALID_FILE_ATTRIBUTES) {
         wchar_t appdata[MAX_PATH] = {0};
         if (GetEnvironmentVariableW(L"LOCALAPPDATA", appdata, MAX_PATH) > 0 && appdata[0]) {
             _snwprintf(profile, MAX_PATH * 2, L"%s\\Kwifi\\webview", appdata);
-        } else {
-            _snwprintf(profile, MAX_PATH * 2, L"%s\\webview", g_data);
+            mkdirs(profile);
         }
     }
-    mkdirs(profile);
     logf_("open_ui: profile %ls", profile);
 
     /* the loader ships inside this exe. A previous run may have left a truncated
@@ -713,7 +713,22 @@ static void open_ui(void)
 
     /* WebView2 fails with E_UNEXPECTED when the profile folder is locked by a
        leftover process; a fresh profile is the fix, and it beats a blank window */
-    for (int i = 0; i < 25 && !kg_webview_alive() && !kg_webview_failed(); i++) Sleep(100);
+    for (int i = 0; i < 80 && !kg_webview_alive() && !kg_webview_failed(); i++) Sleep(100);
+
+    /* the WebView2 callback never arriving looks exactly like a blank window;
+       treat eight seconds of silence as a failure so the user gets a reason */
+    if (!kg_webview_alive() && !kg_webview_failed()) {
+        wchar_t msg[1024];
+        _snwprintf(msg, 1024,
+                   L"WebView2 在 8 秒内没有初始化完成。\n\n"
+                   L"请确认已安装 Microsoft Edge WebView2 Runtime（Windows 11 自带）。\n"
+                   L"若反复出现，删除下面的目录后重启程序：\n%ls\n",
+                   profile);
+        MessageBoxW(NULL, msg, APP_TITLE, MB_ICONERROR | MB_OK);
+        logf_("open_ui: webview did not initialise in 8s");
+        return;
+    }
+
     if (kg_webview_failed()) {
         logf_("open_ui: webview failed (0x%08lX), retrying with a fresh profile",
               (unsigned long)kg_webview_last_error());
@@ -1012,6 +1027,7 @@ static BOOL ensure_wv2_loader(wchar_t *out, size_t cch)
             GetFileAttributesExW(candidate[i], GetFileExInfoStandard, &info) &&
             info.nFileSizeLow == srv_wv2_loader_size()) {
             lstrcpynW(out, candidate[i], (int)cch);
+            logf_("loader: using %ls", candidate[i]);
             return TRUE;
         }
         logf_("webview loader write failed: %ls (err %lu)", candidate[i],
