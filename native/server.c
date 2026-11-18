@@ -1864,6 +1864,11 @@ static void write_embedded(const wchar_t *dir, const wchar_t *name,
 }
 
 /* the WebView2 loader is embedded once here and unpacked by the shell */
+DWORD srv_wv2_loader_size(void)
+{
+    return res_wv2_loader_len;
+}
+
 int srv_write_wv2_loader(const wchar_t *path)
 {
     HANDLE h = CreateFileW(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,

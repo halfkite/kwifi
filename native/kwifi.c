@@ -44,6 +44,8 @@
 extern HWND kg_webview_open(HINSTANCE inst, const wchar_t *url,
                             const wchar_t *userDataDir, const wchar_t *dllPath);
 extern BOOL kg_webview_alive(void);
+extern BOOL kg_webview_failed(void);
+extern long kg_webview_last_error(void);
 extern void kg_webview_show(void);
 extern void kg_webview_close(void);
 #define TRAY_ID     1
@@ -61,6 +63,7 @@ static wchar_t g_exe[MAX_PATH];
 
 static void mkdirs(wchar_t *path);
 static HICON load_app_icon(int size);
+static BOOL ensure_wv2_loader(wchar_t *out, size_t cch);
 static void compute_data_dir(wchar_t *out, size_t cch);
 
 /* autostart helpers (defined further down) */
@@ -675,20 +678,65 @@ static void open_ui(void)
     wchar_t url[128];
     _snwprintf(url, 128, L"http://127.0.0.1:%u/", (unsigned)g_port);
 
-    /* keep the exe folder clean: cache and loader live in the data directory */
+    /* WebView2 needs a writable profile folder. LOCALAPPDATA is the reliable
+       place for it: the data folder may be a fallback (temp) or read-only, and
+       WebView2 fails with E_UNEXPECTED rather than degrading. */
     wchar_t profile[MAX_PATH * 2];
-    _snwprintf(profile, MAX_PATH * 2, L"%s\\webview", g_data);
+    {
+        wchar_t appdata[MAX_PATH] = {0};
+        if (GetEnvironmentVariableW(L"LOCALAPPDATA", appdata, MAX_PATH) > 0 && appdata[0]) {
+            _snwprintf(profile, MAX_PATH * 2, L"%s\\Kwifi\\webview", appdata);
+        } else {
+            _snwprintf(profile, MAX_PATH * 2, L"%s\\webview", g_data);
+        }
+    }
     mkdirs(profile);
+    logf_("open_ui: profile %ls", profile);
 
-    /* the loader ships inside this exe; unpack it next to the data */
+    /* the loader ships inside this exe. A previous run may have left a truncated
+       copy behind, so check the size rather than mere existence, and try the
+       temp folder before giving up: a failed write used to surface much later as
+       "cannot find WebView2Loader.dll" with the window already on screen. */
     wchar_t loader[MAX_PATH * 2];
-    _snwprintf(loader, MAX_PATH * 2, L"%s\\WebView2Loader.dll", g_data);
-    if (GetFileAttributesW(loader) == INVALID_FILE_ATTRIBUTES) {
-        srv_write_wv2_loader(loader);
+    if (!ensure_wv2_loader(loader, MAX_PATH * 2)) {
+        logf_("open_ui: webview loader unavailable in %ls", g_data);
+        MessageBoxW(NULL,
+                    L"无法解出 WebView2Loader.dll（界面组件）。\n\n"
+                    L"可能是数据目录不可写，或被杀毒软件拦截。\n"
+                    L"请确认以下目录可写：\n",
+                    APP_TITLE, MB_ICONERROR | MB_OK);
+        return;
     }
 
     logf_("open_ui: creating webview window");
     HWND ui = kg_webview_open(g_inst, url, profile, loader);
+
+    /* WebView2 fails with E_UNEXPECTED when the profile folder is locked by a
+       leftover process; a fresh profile is the fix, and it beats a blank window */
+    for (int i = 0; i < 25 && !kg_webview_alive() && !kg_webview_failed(); i++) Sleep(100);
+    if (kg_webview_failed()) {
+        logf_("open_ui: webview failed (0x%08lX), retrying with a fresh profile",
+              (unsigned long)kg_webview_last_error());
+        kg_webview_close();
+
+        wchar_t fresh[MAX_PATH * 2];
+        _snwprintf(fresh, MAX_PATH * 2, L"%s-%lu", profile, (unsigned long)GetCurrentProcessId());
+        mkdirs(fresh);
+        ui = kg_webview_open(g_inst, url, fresh, loader);
+        for (int i = 0; i < 25 && !kg_webview_alive() && !kg_webview_failed(); i++) Sleep(100);
+    }
+
+    if (kg_webview_failed()) {
+        wchar_t msg[1024];
+        _snwprintf(msg, 1024,
+                   L"界面组件启动失败（0x%08lX）。\n\n"
+                   L"服务本身已经运行，可以稍后重试。\n"
+                   L"若反复失败，请删除下面的目录后重启程序：\n%ls\n",
+                   (unsigned long)kg_webview_last_error(), profile);
+        MessageBoxW(NULL, msg, APP_TITLE, MB_ICONERROR | MB_OK);
+        return;
+    }
+
     if (ui) {
         HICON big = load_app_icon(32);
         HICON small = load_app_icon(16);
@@ -931,6 +979,46 @@ static void ensure_parent_dirs(wchar_t *path)
     }
 }
 
+/* the WebView2 loader is embedded; write it somewhere usable and return the path */
+static BOOL ensure_wv2_loader(wchar_t *out, size_t cch)
+{
+    wchar_t candidate[3][MAX_PATH * 2];
+    int n = 0;
+
+    /* next to the exe first: a source checkout already has it there */
+    _snwprintf(candidate[n++], MAX_PATH * 2, L"%s\\WebView2Loader.dll", g_root);
+    if (g_data[0]) _snwprintf(candidate[n++], MAX_PATH * 2, L"%s\\WebView2Loader.dll", g_data);
+    {
+        wchar_t tmp[MAX_PATH] = {0};
+        GetTempPathW(MAX_PATH, tmp);
+        _snwprintf(candidate[n++], MAX_PATH * 2, L"%sKwifi-webview\\WebView2Loader.dll", tmp);
+    }
+
+    for (int i = 0; i < n; i++) {
+        WIN32_FILE_ATTRIBUTE_DATA info;
+        if (GetFileAttributesExW(candidate[i], GetFileExInfoStandard, &info) &&
+            info.nFileSizeLow == srv_wv2_loader_size()) {
+            lstrcpynW(out, candidate[i], (int)cch);
+            return TRUE;
+        }
+
+        /* writes into a folder that does not exist yet would fail silently */
+        wchar_t dir[MAX_PATH * 2];
+        lstrcpynW(dir, candidate[i], MAX_PATH * 2);
+        wchar_t *slash = wcsrchr(dir, L'\\');
+        if (slash) { *slash = 0; mkdirs(dir); }
+
+        if (srv_write_wv2_loader(candidate[i]) &&
+            GetFileAttributesExW(candidate[i], GetFileExInfoStandard, &info) &&
+            info.nFileSizeLow == srv_wv2_loader_size()) {
+            lstrcpynW(out, candidate[i], (int)cch);
+            return TRUE;
+        }
+        logf_("webview loader write failed: %ls (err %lu)", candidate[i],
+              (unsigned long)GetLastError());
+    }
+    return FALSE;
+}
 /* the icon lives in the executable (written by respatch); fall back to the
    generated one when a build skipped the resource step */
 static HICON load_app_icon(int size)

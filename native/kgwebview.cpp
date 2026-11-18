@@ -33,7 +33,10 @@ static HWND g_hwnd = NULL;
 static ICoreWebView2Controller *g_controller = NULL;
 static ICoreWebView2 *g_webview = NULL;
 static std::wstring g_url;
+static std::wstring g_userData;
 static bool g_ready = false;
+static bool g_failed = false;
+static HRESULT g_lastError = S_OK;
 
 static void resize_webview(void)
 {
@@ -82,7 +85,13 @@ class ControllerHandler : public Handler<ICoreWebView2CreateCoreWebView2Controll
 public:
     HRESULT STDMETHODCALLTYPE Invoke(HRESULT result, ICoreWebView2Controller *controller) override
     {
-        if (FAILED(result) || !controller) return S_OK;
+        if (FAILED(result) || !controller) {
+            /* remember it: the caller retries with a fresh profile before it
+               bothers the user with a dialog */
+            g_failed = true;
+            g_lastError = result;
+            return S_OK;
+        }
 
         g_controller = controller;
         g_controller->AddRef();
@@ -99,7 +108,21 @@ public:
                 settings->put_AreDevToolsEnabled(FALSE);
                 settings->Release();
             }
-            g_webview->Navigate(g_url.c_str());
+            /* show something while the backend connects: if the navigation never
+           completes the user sees the address instead of a blank frame */
+        {
+            std::wstring placeholder =
+                L"<html><head><meta charset=\"utf-8\"><style>"
+                L"body{font-family:system-ui,Segoe UI,sans-serif;background:#f6f8fc;color:#334155;"
+                L"display:flex;align-items:center;justify-content:center;height:100vh;margin:0}"
+                L"div{text-align:center;line-height:1.9}h3{font-weight:600;color:#1e293b}"
+                L"code{background:#e2e8f0;padding:2px 8px;border-radius:6px;font-size:13px}"
+                L"</style></head><body><div><h3>正在连接 kwifi 服务…</h3>"
+                L"<p>如果一直停在这里，说明本地服务没有启动。</p>"
+                L"<p><code>" + g_url + L"</code></p></div></body></html>";
+            g_webview->NavigateToString(placeholder.c_str());
+        }
+        g_webview->Navigate(g_url.c_str());
         }
 
         g_ready = true;
@@ -113,9 +136,8 @@ public:
     HRESULT STDMETHODCALLTYPE Invoke(HRESULT result, ICoreWebView2Environment *env) override
     {
         if (FAILED(result) || !env) {
-            MessageBoxW(g_hwnd,
-                        L"WebView2 运行时不可用，无法显示界面。\n请安装 Microsoft Edge WebView2 Runtime。",
-                        L"kwifi", MB_ICONERROR | MB_OK);
+            g_failed = true;
+            g_lastError = result;
             return S_OK;
         }
         env->CreateCoreWebView2Controller(g_hwnd, new ControllerHandler());
@@ -154,6 +176,7 @@ static bool init_webview(const wchar_t *dllPath, const wchar_t *userDataDir)
     if (!create) return false;
 
     std::wstring data = userDataDir ? userDataDir : L"";
+    g_userData = data;
     return SUCCEEDED(create(nullptr, data.empty() ? nullptr : data.c_str(),
                             nullptr, new EnvironmentHandler()));
 }
@@ -173,6 +196,8 @@ __declspec(dllexport) HWND kg_webview_open(HINSTANCE inst, const wchar_t *url,
     }
 
     g_url = url ? url : L"";
+    g_failed = false;
+    g_lastError = S_OK;
 
     WNDCLASSEXW wc;
     ZeroMemory(&wc, sizeof(wc));
@@ -216,6 +241,17 @@ __declspec(dllexport) HWND kg_webview_open(HINSTANCE inst, const wchar_t *url,
 __declspec(dllexport) BOOL kg_webview_alive(void)
 {
     return g_hwnd && IsWindow(g_hwnd) ? TRUE : FALSE;
+}
+
+/* why the controller never appeared; the caller retries before reporting it */
+__declspec(dllexport) BOOL kg_webview_failed(void)
+{
+    return g_failed ? TRUE : FALSE;
+}
+
+__declspec(dllexport) long kg_webview_last_error(void)
+{
+    return (long)g_lastError;
 }
 
 __declspec(dllexport) void kg_webview_show(void)

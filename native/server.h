@@ -2,7 +2,8 @@
 #include <windows.h>
 
 /* native/server.c */
-int  srv_write_wv2_loader(const wchar_t *path);
+int   srv_write_wv2_loader(const wchar_t *path);
+DWORD srv_wv2_loader_size(void);
 void srv_start(HINSTANCE inst, const wchar_t *exeDir, const wchar_t *dataDir, int port);
 void srv_stop(void);
 
@@ -20,6 +21,7 @@ void kwifi_request_elevation(void);
 int  kwifi_task_state(void);
 int  kwifi_task_install(void);
 int  kwifi_task_remove(void);
+
 
 
 
