@@ -32,3 +32,4 @@
 *.pdb
 # local per-build archive
 /builds/
+/native/version.h

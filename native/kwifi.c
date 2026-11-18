@@ -28,6 +28,7 @@
 #include <shlobj.h>
 #include <tlhelp32.h>
 #include <sddl.h>
+#include "version.h"
 #include "server.h"
 #include <stdio.h>
 #include <stdlib.h>

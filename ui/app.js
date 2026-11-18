@@ -561,7 +561,9 @@ function render(s) {
   el.tTtl.checked = Boolean(s.config?.stealth?.ttl);
 
   const ttlState = s.stealth?.ttl || 'missing';
-  paintDataPlane(ttlState === 'active');
+  paintDataPlane(Boolean(s.dataplane));
+  const av = $('#appVer');
+  if (av && s.appVersion) av.textContent = s.appVersion;
   if (el.ttlTag) {
     el.ttlTag.textContent = ttlState === 'active' ? '运行中' : ttlState === 'ready' ? '已就绪' : '未安装';
     el.ttlTag.style.opacity = ttlState === 'missing' ? '0.5' : '1';
@@ -853,6 +855,8 @@ function paintDataPlane(up) {
 function paintFromStatus(s) {
   if (!s) return;
   paintDataPlane(Boolean(s.stealth && s.stealth.ttl === 'active'));
+  const av = $('#appVer');
+  if (av && s.appVersion) av.textContent = s.appVersion;
 }
 
 const listenAddr = $('#listenAddr');

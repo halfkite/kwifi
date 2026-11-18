@@ -19,6 +19,7 @@
 #include <time.h>
 
 #include "embedded.h"
+#include "version.h"
 #include "server.h"
 
 #define MAX_DEV      256
@@ -1182,6 +1183,7 @@ static void build_status(sb *b)
     }
     sb_puts(b, "]");
     sb_putf(b, ",\"dataplane\":%s", helper_alive() ? "true" : "false");
+    sb_puts(b, ",\"appVersion\":\"" APP_VERSION "\"");
     sb_putf(b, ",\"ts\":%lld}}", (long long)time(NULL) * 1000);
 
     LeaveCriticalSection(&S.cs);
@@ -1699,7 +1701,8 @@ static void handle_request(SOCKET s)
 
     if (!strcmp(path, "/api/health")) {
         char out[128];
-        _snprintf(out, sizeof(out), "{\"ok\":true,\"pid\":%lu,\"admin\":%s,\"version\":\"4\"}",
+        _snprintf(out, sizeof(out),
+                  "{\"ok\":true,\"pid\":%lu,\"admin\":%s,\"api\":\"4\",\"app\":\"" APP_VERSION "\"}",
                   (unsigned long)GetCurrentProcessId(), S.admin ? "true" : "false");
         http_json(s, 200, out);
         return;
