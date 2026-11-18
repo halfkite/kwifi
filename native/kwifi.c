@@ -65,6 +65,8 @@ static void mkdirs(wchar_t *path);
 static HICON load_app_icon(int size);
 static BOOL ensure_wv2_loader(wchar_t *out, size_t cch);
 static void compute_data_dir(wchar_t *out, size_t cch);
+static int dir_writable(const wchar_t *dir);
+
 
 /* autostart helpers (defined further down) */
 static BOOL sid_of_process(DWORD pid, wchar_t *out, size_t cch);
@@ -277,6 +279,18 @@ void kwifi_request_exit(void)
     if (g_hwnd) PostMessageW(g_hwnd, WM_COMMAND, 5, 0);
 }
 
+/* can we actually create a file here? */
+static int dir_writable(const wchar_t *dir)
+{
+    wchar_t probe[MAX_PATH * 2];
+    _snwprintf(probe, MAX_PATH * 2, L"%s\\.writable", dir);
+    HANDLE h = CreateFileW(probe, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
+                           FILE_ATTRIBUTE_TEMPORARY, NULL);
+    if (h == INVALID_HANDLE_VALUE) return 0;
+    CloseHandle(h);
+    DeleteFileW(probe);
+    return 1;
+}
 /* where the backend keeps its state (must match server.c) */
 static void compute_data_dir(wchar_t *out, size_t cch)
 {
@@ -1453,20 +1467,24 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdline, int show)
         compute_data_dir(data_dir, MAX_PATH * 2);
         mkdirs(data_dir);
 
-        /* a restricted profile, a read-only roaming folder or a blocked path must
-           not leave the backend unable to save anything: fall back to TEMP */
-        wchar_t probe[MAX_PATH * 2];
-        _snwprintf(probe, MAX_PATH * 2, L"%s\\.writable", data_dir);
-        HANDLE h = CreateFileW(probe, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
-                               FILE_ATTRIBUTE_TEMPORARY, NULL);
-        if (h != INVALID_HANDLE_VALUE) {
-            CloseHandle(h);
-            DeleteFileW(probe);
-        } else {
-            wchar_t tmp[MAX_PATH] = {0};
-            GetTempPathW(MAX_PATH, tmp);
-            _snwprintf(data_dir, MAX_PATH * 2, L"%sKwifi-data", tmp);
-            mkdirs(data_dir);
+        /* The profile folder may be read-only, controlled by antivirus, or on a
+           blocked drive. If it cannot be written the program still has to work,
+           so try the folder next to the exe (usually a different drive) before
+           falling back to TEMP, which is normally on the same blocked drive. */
+        if (!dir_writable(data_dir)) {
+            wchar_t beside[MAX_PATH * 2];
+            _snwprintf(beside, MAX_PATH * 2, L"%s\\data", g_root);
+            mkdirs(beside);
+            if (dir_writable(beside)) {
+                lstrcpynW(data_dir, beside, MAX_PATH * 2);
+                logf_("data dir fallback: %ls", data_dir);
+            } else {
+                wchar_t tmp[MAX_PATH] = {0};
+                GetTempPathW(MAX_PATH, tmp);
+                _snwprintf(data_dir, MAX_PATH * 2, L"%sKwifi-data", tmp);
+                mkdirs(data_dir);
+                logf_("data dir fallback: %ls", data_dir);
+            }
         }
         lstrcpynW(g_data, data_dir, MAX_PATH);
     }
