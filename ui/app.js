@@ -544,6 +544,7 @@ function render(s) {
   el.tTtl.checked = Boolean(s.config?.stealth?.ttl);
 
   const ttlState = s.stealth?.ttl || 'missing';
+  paintDataPlane(ttlState === 'active');
   if (el.ttlTag) {
     el.ttlTag.textContent = ttlState === 'active' ? '运行中' : ttlState === 'ready' ? '已就绪' : '未安装';
     el.ttlTag.style.opacity = ttlState === 'missing' ? '0.5' : '1';
@@ -754,6 +755,15 @@ el.elevateBtn?.addEventListener('click', async () => {
 
 refreshAdmin();
 
+el.doctorCopy?.addEventListener('click', async () => {
+  try {
+    await navigator.clipboard.writeText($('#doctorOut').textContent || '');
+    toast('诊断内容已复制');
+  } catch {
+    toast('复制失败，请手动选中', true);
+  }
+});
+
 // ---------------- backend as a Windows service ----------------
 // Installing the service is the one action that needs admin; once it is running
 // the interface never asks for elevation again.
@@ -816,8 +826,17 @@ el.svcRemove?.addEventListener('click', () => setService('remove'));
 })();
 
 // runtime facts shown in the settings card
-const dpState = $('#dpState');
-if (dpState) dpState.textContent = '未启动';
+// the data plane enforces blocking and shaping; show whether it is actually up
+function paintDataPlane(up) {
+  const dp = $('#dpState');
+  if (!dp) return;
+  dp.textContent = up ? '运行中' : '未运行';
+  dp.classList.toggle('warn-text', !up);
+}
+function paintFromStatus(s) {
+  if (!s) return;
+  paintDataPlane(Boolean(s.stealth && s.stealth.ttl === 'active'));
+}
 
 const listenAddr = $('#listenAddr');
 if (listenAddr) listenAddr.textContent = `127.0.0.1:${location.port || 17899}`;

@@ -8,7 +8,10 @@ $items = @(
   @{ name = 'res_styles_css'; path = Join-Path $root 'ui\styles.css' },
   @{ name = 'res_net_ps1';    path = Join-Path $PSScriptRoot '..\ps\net.ps1' },
   @{ name = 'res_ttlfix_exe'; path = Join-Path $PSScriptRoot 'win\ttlfix.exe' },
-  @{ name = 'res_wv2_loader'; path = Join-Path $root 'WebView2Loader.dll' }
+  @{ name = 'res_wv2_loader'; path = Join-Path $root 'WebView2Loader.dll' },
+  @{ name = 'res_windivert_dll'; path = Join-Path $PSScriptRoot 'win\WinDivert.dll' },
+  @{ name = 'res_windivert_sys'; path = Join-Path $PSScriptRoot 'win\WinDivert64.sys' },
+  @{ name = 'res_windivert_lic'; path = Join-Path $PSScriptRoot 'win\WinDivert-LICENSE.txt' }
 )
 
 $sb = New-Object System.Text.StringBuilder

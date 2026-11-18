@@ -974,3 +974,7 @@ html[data-theme="dark"] .banner-text small { color: #fbbf24; }
 .svc-actions .btn { flex: 0 0 auto; }
 .svc-actions .btn[hidden] { display: none; }
 .settings-card .kv-list dd#svcState { font-weight: 600; }
+
+/* ---------- v20: unavailable data plane is called out ---------- */
+.warn-text { color: #b45309; font-weight: 600; }
+html[data-theme="dark"] .warn-text { color: #fbbf24; }

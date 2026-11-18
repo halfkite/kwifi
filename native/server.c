@@ -686,15 +686,33 @@ static int ps_json(const char *args, int prio, char *out, size_t cch, int timeou
 static HANDLE g_helper = NULL;
 static DWORD g_helperPid = 0;
 
-static void helper_extract(void)
+/* ttlfix links WinDivert.dll, and the driver is loaded from WinDivert64.sys next
+   to it, so all three have to be unpacked (plus the LGPL licence text) */
+static void write_beside_data(const wchar_t *name, const unsigned char *data, DWORD len)
 {
-    wchar_t exe[MAX_PATH * 2];
-    _snwprintf(exe, MAX_PATH * 2, L"%s\\ttlfix.exe", g_dataDir);
-    HANDLE h = CreateFileW(exe, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    wchar_t path[MAX_PATH * 2];
+    _snwprintf(path, MAX_PATH * 2, L"%s\\%s", g_dataDir, name);
+
+    /* rewrite only when the size differs: a running ttlfix holds the dll */
+    WIN32_FILE_ATTRIBUTE_DATA info;
+    if (GetFileAttributesExW(path, GetFileExInfoStandard, &info) &&
+        info.nFileSizeLow == len) {
+        return;
+    }
+
+    HANDLE h = CreateFileW(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if (h == INVALID_HANDLE_VALUE) return;
     DWORD w = 0;
-    WriteFile(h, res_ttlfix_exe, res_ttlfix_exe_len, &w, NULL);
+    WriteFile(h, data, len, &w, NULL);
     CloseHandle(h);
+}
+
+static void helper_extract(void)
+{
+    write_beside_data(L"ttlfix.exe", res_ttlfix_exe, res_ttlfix_exe_len);
+    write_beside_data(L"WinDivert.dll", res_windivert_dll, res_windivert_dll_len);
+    write_beside_data(L"WinDivert64.sys", res_windivert_sys, res_windivert_sys_len);
+    write_beside_data(L"WinDivert-LICENSE.txt", res_windivert_lic, res_windivert_lic_len);
 }
 
 static void helper_write_conf(const char *psData)
@@ -815,6 +833,20 @@ static void helper_start(void)
 
     if (CreateProcessW(NULL, cmd, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, g_dataDir, &si, &pi)) {
         CloseHandle(pi.hThread);
+
+        /* opening the WinDivert handle fails within a few hundred milliseconds
+           when the driver is missing or we are not elevated, so wait before
+           claiming success - a rule that is not enforced must not look applied */
+        DWORD wait = WaitForSingleObject(pi.hProcess, 1200);
+        if (wait == WAIT_OBJECT_0) {
+            DWORD code = 0;
+            GetExitCodeProcess(pi.hProcess, &code);
+            CloseHandle(pi.hProcess);
+            log_add(2, "数据面启动后立即退出 (code %lu)：缺少管理员权限，或 WinDivert 驱动被拦截",
+                    (unsigned long)code);
+            return;
+        }
+
         g_helper = pi.hProcess;
         g_helperPid = pi.dwProcessId;
         log_add(0, "数据面已启动 (PID %lu)", (unsigned long)g_helperPid);
@@ -840,6 +872,21 @@ static void helper_stop(void)
     }
 }
 
+/* the data plane enforces blocking, shaping and priority; TTL rewriting is only
+   one of its jobs, so it has to run whenever any rule exists */
+static int any_rules(void)
+{
+    for (int i = 0; i < S.devCount; i++) {
+        device_t *d = &S.dev[i];
+        if (d->blocked || d->upMbps || d->downMbps || d->prio != 3) return 1;
+    }
+    return 0;
+}
+
+static int dataplane_needed(void)
+{
+    return (S.cfg.st_ttl || any_rules()) ? 1 : 0;
+}
 static void helper_read_stats(void)
 {
     wchar_t path[MAX_PATH * 2];
@@ -940,7 +987,7 @@ static void poll_once(int full)
 
     helper_write_conf(data);
     helper_extract();
-    if (S.cfg.st_ttl) {
+    if (dataplane_needed()) {
         if (!helper_alive()) helper_start();
     } else if (helper_alive()) {
         helper_stop();
@@ -1313,7 +1360,7 @@ static void api_stealth(SOCKET s, const char *body)
     ps_free(j);
 
     helper_write_conf(S.psData);
-    if (S.cfg.st_ttl) helper_start(); else helper_stop();
+    if (dataplane_needed()) helper_start(); else helper_stop();
 }
 
 /* per-device settings: /api/device, /api/limit, /api/block */
@@ -1374,15 +1421,37 @@ static void api_device(SOCKET s, const char *body, int blockAlias)
     }
 
     dev_save();
+
+    /* apply the rule now: rewriting the config and starting the data plane here
+       makes blocking take effect immediately instead of on the next poll */
     helper_write_conf(S.psData);
+    if (dataplane_needed()) {
+        if (!helper_alive()) helper_start();
+    } else if (helper_alive()) {
+        helper_stop();
+    }
+
+    /* a rule nobody enforces is worse than no rule: say so explicitly */
+    const char *warning = NULL;
+    if (wantBlock == 1 && !helper_alive()) {
+        warning = "数据面没能启动，封禁不会生效。请用管理员权限运行，或在设置里安装后台服务。";
+    } else if (wantBlock == 0 && !helper_alive() && any_rules()) {
+        warning = "数据面没能启动，封禁和限速都不会生效。";
+    }
 
     sb b;
-    sb_init(&b, 256);
+    sb_init(&b, 512);
     sb_puts(&b, "{\"ok\":true,\"data\":{");
     sb_puts(&b, "\"mac\":"); sb_json_str(&b, d->mac);
     sb_puts(&b, ",\"blocked\":"); sb_puts(&b, d->blocked ? "true" : "false");
-    sb_putf(&b, ",\"prio\":%d,\"upMbps\":%d,\"downMbps\":%d},\"warnings\":[]}",
-            d->prio, d->upMbps, d->downMbps);
+    sb_putf(&b, ",\"prio\":%d,\"upMbps\":%d,\"downMbps\":%d", d->prio, d->upMbps, d->downMbps);
+    sb_putf(&b, ",\"dataplane\":%s", helper_alive() ? "true" : "false");
+    sb_puts(&b, "},\"warnings\":[]");
+    if (warning) {
+        sb_puts(&b, ",\"warning\":");
+        sb_json_str(&b, warning);
+    }
+    sb_puts(&b, "}");
     http_json(s, 200, b.p);
     sb_free(&b);
 }
@@ -1824,9 +1893,12 @@ void srv_start(HINSTANCE inst, const wchar_t *exeDir, const wchar_t *dataDir, in
     cfg_load();
     dev_load();
 
-    /* net.ps1 and the helper live next to the data */
+    /* net.ps1 and the data plane live next to the state */
     write_embedded(g_dataDir, L"net.ps1", res_net_ps1, res_net_ps1_len);
-    write_embedded(g_dataDir, L"ttlfix.exe", res_ttlfix_exe, res_ttlfix_exe_len);
+    write_beside_data(L"ttlfix.exe", res_ttlfix_exe, res_ttlfix_exe_len);
+    write_beside_data(L"WinDivert.dll", res_windivert_dll, res_windivert_dll_len);
+    write_beside_data(L"WinDivert64.sys", res_windivert_sys, res_windivert_sys_len);
+    write_beside_data(L"WinDivert-LICENSE.txt", res_windivert_lic, res_windivert_lic_len);
 
     log_add(0, "Kwifi 控制台已启动: http://127.0.0.1:%d", g_port);
 

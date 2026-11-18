@@ -254,9 +254,14 @@
 </dialog>
 
 <dialog id="doctorDialog" class="dialog">
-  <h2>环境诊断</h2>
-  <pre id="doctorOut" class="log"></pre>
-  <div class="dialog-actions"><button value="close" class="ghost-btn">关闭</button></div>
+  <form method="dialog">
+    <h2>环境诊断</h2>
+    <pre id="doctorOut" class="log"></pre>
+    <div class="dialog-actions">
+      <button id="doctorCopy" type="button" class="ghost-btn">复制</button>
+      <button value="close" class="ghost-btn">关闭</button>
+    </div>
+  </form>
 </dialog>
 
 <div id="toast" class="toast" hidden></div>
