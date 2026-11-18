@@ -87,12 +87,57 @@ static BOOL WINAPI ctrl_handler(DWORD type)
 
 static DWORD now_ms(void) { return (DWORD)GetTickCount64(); }
 
-static int is_client_ip(uint32_t ip)
+/* the hotspot subnet is not always 192.168.137.0/24 - the server sends the real
+   one, otherwise a rule on another subnet would silently match nothing */
+#define MAX_SUBNET 8
+static uint32_t g_subnet[MAX_SUBNET];
+static uint32_t g_subnet_mask[MAX_SUBNET];
+static int      g_subnet_n = 0;
+
+static void subnet_reset(void)
 {
-    /* 192.168.137.0/24 - the ICS / hosted-network subnet we serve */
-    return (ip & 0xFFFFFF00u) == 0xC0A88900u;
+    g_subnet_n = 0;
+    g_subnet[0] = 0xC0A88900u;      /* 192.168.137.0/24 */
+    g_subnet_mask[0] = 0xFFFFFF00u;
+    g_subnet_n = 1;
 }
 
+static void subnet_add(uint32_t base, uint32_t mask)
+{
+    for (int i = 0; i < g_subnet_n; i++) {
+        if (g_subnet[i] == (base & mask) && g_subnet_mask[i] == mask) return;
+    }
+    if (g_subnet_n < MAX_SUBNET) {
+        g_subnet[g_subnet_n] = base & mask;
+        g_subnet_mask[g_subnet_n] = mask;
+        g_subnet_n++;
+    }
+}
+
+static int is_client_ip(uint32_t ip)
+{
+    for (int i = 0; i < g_subnet_n; i++) {
+        if ((ip & g_subnet_mask[i]) == g_subnet[i]) return 1;
+    }
+    return 0;
+}
+
+/* WinDivert hands over the whole frame: Ethernet (possibly 802.1Q tagged) on
+   real adapters, or a bare IP packet on some virtual ones. Every offset below
+   used to assume the IP header starts at packet[0], which is wrong for Ethernet
+   - so nothing matched and no rule was ever enforced. */
+static int ipv4_offset(const unsigned char *p, UINT len)
+{
+    if (len >= 14) {
+        unsigned int et = ((unsigned int)p[12] << 8) | p[13];
+        if (et == 0x0800) return 14;                    /* Ethernet II */
+        if (et == 0x8100 || et == 0x88A8) {             /* 802.1Q / QinQ */
+            if (len >= 18 && ((((unsigned int)p[16] << 8) | p[17]) == 0x0800)) return 18;
+        }
+    }
+    if (len >= 20 && (p[0] >> 4) == 4) return 0;        /* bare IPv4 */
+    return -1;
+}
 static client_t *client_for(uint32_t ip, int create)
 {
     client_t *free_slot = NULL;
@@ -220,6 +265,8 @@ static void load_config(const char *path)
         g_clients[i].prio = DEFAULT_PRIO;
     }
 
+    subnet_reset();
+
     char line[512];
     while (fgets(line, sizeof(line), f)) {
         char *p = line;
@@ -253,6 +300,22 @@ static void load_config(const char *path)
                     cl->down_rate = (double)down * 1000.0 / 8.0;
                     if (n >= 7 && prio >= 1 && prio <= MAX_PRIO) cl->prio = (int)prio;
                 }
+            }
+        } else if (strncmp(p, "subnet", 6) == 0) {
+            unsigned sa = 0, sb = 0, sc2 = 0, sd = 0, bits = 24;
+            char *q = p + 6;
+            while (*q == ' ' || *q == '\t') q++;
+            int got = sscanf(q, "%u.%u.%u.%u/%u", &sa, &sb, &sc2, &sd, &bits);
+            if (got < 4) {
+                bits = 24;
+                got = sscanf(q, "%u.%u.%u.%u", &sa, &sb, &sc2, &sd);
+            }
+            if (got >= 4) {
+                if (bits > 32) bits = 32;
+                uint32_t base = ((uint32_t)sa << 24) | ((uint32_t)sb << 16) |
+                                ((uint32_t)sc2 << 8) | (uint32_t)sd;
+                uint32_t mask = bits >= 32 ? 0xFFFFFFFFu : (0xFFFFFFFFu << (32 - bits));
+                subnet_add(base, mask);
             }
         } else if (strncmp(p, "block ", 6) == 0) {
             unsigned a, b, c, d;
@@ -306,18 +369,107 @@ static void write_stats(const char *path)
     rename(tmp, path);
 }
 
+/* --selftest: prove the frame parser before trusting it with real traffic.
+   Runs without administrator rights, so it can be checked anywhere. */
+static int selftest(void)
+{
+    unsigned char eth[14 + 20];
+    unsigned char vlan[18 + 20];
+    unsigned char raw[20];
+    int bad = 0;
+
+    memset(eth, 0, sizeof(eth));
+    eth[0] = 0xFC; eth[1] = 0x43; eth[2] = 0x45; eth[3] = 0xAB; eth[4] = 0x79; eth[5] = 0x48;
+    eth[6] = 0x00; eth[7] = 0x11; eth[8] = 0x22; eth[9] = 0x33; eth[10] = 0x44; eth[11] = 0x55;
+    eth[12] = 0x08; eth[13] = 0x00;                 /* IPv4 */
+    eth[14] = 0x45; eth[22] = 64;                   /* version/IHL, ttl */
+    eth[14 + 12] = 192; eth[14 + 13] = 168; eth[14 + 14] = 137; eth[14 + 15] = 50;
+    eth[14 + 16] = 8;   eth[14 + 17] = 8;   eth[14 + 18] = 8;   eth[14 + 19] = 8;
+
+    memset(vlan, 0, sizeof(vlan));
+    memcpy(vlan, eth, 12);
+    vlan[12] = 0x81; vlan[13] = 0x00;               /* 802.1Q */
+    vlan[14] = 0x00; vlan[15] = 0x64;
+    vlan[16] = 0x08; vlan[17] = 0x00;
+    memcpy(vlan + 18, eth + 14, 20);
+
+    memset(raw, 0, sizeof(raw));
+    raw[0] = 0x45; raw[8] = 64;
+    raw[12] = 192; raw[13] = 168; raw[14] = 137; raw[15] = 9;
+    raw[16] = 1;   raw[17] = 1;   raw[18] = 1;   raw[19] = 1;
+
+    struct { const char *name; const unsigned char *buf; UINT len; int off; UINT32 src; } cases[] = {
+        { "ethernet",        eth,  sizeof(eth),  14, 0xC0A88932u },
+        { "802.1q",          vlan, sizeof(vlan), 18, 0xC0A88932u },
+        { "bare ip",         raw,  sizeof(raw),   0, 0xC0A88909u },
+    };
+
+    for (int i = 0; i < 3; i++) {
+        int off = ipv4_offset(cases[i].buf, cases[i].len);
+        UINT32 src = 0;
+        if (off >= 0) {
+            const unsigned char *ip = cases[i].buf + off;
+            src = ((UINT32)ip[12] << 24) | ((UINT32)ip[13] << 16) |
+                  ((UINT32)ip[14] << 8) | ip[15];
+        }
+        int ok = (off == cases[i].off) && (src == cases[i].src);
+        if (!ok) bad++;
+        printf("  %-9s offset=%d src=%u.%u.%u.%u  %s\n", cases[i].name, off,
+               (src >> 24) & 0xFF, (src >> 16) & 0xFF, (src >> 8) & 0xFF, src & 0xFF,
+               ok ? "ok" : "FAIL");
+    }
+
+    /* an Ethernet frame must not be mistaken for a bare IP packet */
+    if (ipv4_offset(eth, sizeof(eth)) == 0) {
+        printf("  ethernet misdetected as bare ip  FAIL\n");
+        bad++;
+    }
+
+    /* when a config was loaded, show what the rules resolved to */
+    if (g_subnet_n > 0) {
+        printf("  subnets  :");
+        for (int i = 0; i < g_subnet_n; i++) {
+            printf(" %u.%u.%u.%u/%u",
+                   (g_subnet[i] >> 24) & 0xFF, (g_subnet[i] >> 16) & 0xFF,
+                   (g_subnet[i] >> 8) & 0xFF, g_subnet[i] & 0xFF,
+                   g_subnet_mask[i] == 0xFFFFFFFFu ? 32 : 24);
+        }
+        printf("\n");
+    }
+    int blocked = 0;
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        if (!g_clients[i].used) continue;
+        if (g_clients[i].blocked) {
+            printf("  blocked  : %u.%u.%u.%u\n",
+                   (g_clients[i].ip >> 24) & 0xFF, (g_clients[i].ip >> 16) & 0xFF,
+                   (g_clients[i].ip >> 8) & 0xFF, g_clients[i].ip & 0xFF);
+            blocked++;
+        }
+    }
+    if (!blocked) printf("  blocked  : (none)\n");
+
+    printf("%s\n", bad ? "parse self test FAILED" : "parse self test passed");
+    return bad ? 1 : 0;
+}
 int main(int argc, char **argv)
 {
     const char *config_path = NULL;
     const char *stats_path = NULL;
     const char *filter = "ip and not loopback";
     int probe = 0;
+    int selftest_only = 0;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--config") == 0 && i + 1 < argc) config_path = argv[++i];
         else if (strcmp(argv[i], "--stats") == 0 && i + 1 < argc) stats_path = argv[++i];
         else if (strcmp(argv[i], "--filter") == 0 && i + 1 < argc) filter = argv[++i];
         else if (strcmp(argv[i], "--probe") == 0) probe = 1;
+        else if (strcmp(argv[i], "--selftest") == 0) selftest_only = 1;
+    }
+
+    if (selftest_only) {
+        if (config_path) load_config(config_path);
+        return selftest();
     }
 
     SetConsoleCtrlHandler(ctrl_handler, TRUE);
@@ -360,12 +512,14 @@ int main(int argc, char **argv)
         g_packets++;
         int keep = 1;
 
-        if (!addr.IPv6 && packet_len >= 20 && (packet[0] >> 4) == 4) {
-            unsigned char *ttl = &packet[8];
-            uint32_t src = ((uint32_t)packet[12] << 24) | ((uint32_t)packet[13] << 16) |
-                           ((uint32_t)packet[14] << 8) | packet[15];
-            uint32_t dst = ((uint32_t)packet[16] << 24) | ((uint32_t)packet[17] << 16) |
-                           ((uint32_t)packet[18] << 8) | packet[19];
+        int off = addr.IPv6 ? -1 : ipv4_offset(packet, packet_len);
+        if (off >= 0 && packet_len >= (UINT)(off + 20)) {
+            unsigned char *ip = packet + off;
+            unsigned char *ttl = &ip[8];
+            uint32_t src = ((uint32_t)ip[12] << 24) | ((uint32_t)ip[13] << 16) |
+                           ((uint32_t)ip[14] << 8) | ip[15];
+            uint32_t dst = ((uint32_t)ip[16] << 24) | ((uint32_t)ip[17] << 16) |
+                           ((uint32_t)ip[18] << 8) | ip[19];
 
             int upload = addr.Outbound ? 0 : 1;   /* outbound = towards the client */
             client_t *c = NULL;

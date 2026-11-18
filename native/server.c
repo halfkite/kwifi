@@ -751,6 +751,11 @@ static void helper_write_conf(const char *psData)
     }
     if (total > 0) sb_putf(&b, "total=%d\n", total);
 
+    /* the hotspot subnet is whatever the clients actually use; tell the data
+       plane instead of assuming 192.168.137.0/24 */
+    char subnets[8][20];
+    int subnetN = 0;
+
     /* clients + per-device rules */
     const char *cl = strstr(psData, "\"clients\"");
     if (cl) {
@@ -770,6 +775,22 @@ static void helper_write_conf(const char *psData)
                     j_get_str(obj, "ip", ip2, sizeof(ip2));
                     j_get_str(obj, "mac", mac, sizeof(mac));
                     if (ip2[0] && mac[0]) {
+                        /* remember the /24 so the data plane recognises it */
+                        {
+                            unsigned sa = 0, sb = 0, sc = 0, sd = 0;
+                            if (sscanf(ip2, "%u.%u.%u.%u", &sa, &sb, &sc, &sd) == 4) {
+                                char net[20];
+                                _snprintf(net, sizeof(net), "%u.%u.%u.0/24", sa, sb, sc);
+                                int dup = 0;
+                                for (int k = 0; k < subnetN; k++) {
+                                    if (_stricmp(subnets[k], net) == 0) dup = 1;
+                                }
+                                if (!dup && subnetN < 8) {
+                                    lstrcpynA(subnets[subnetN], net, sizeof(subnets[0]));
+                                    subnetN++;
+                                }
+                            }
+                        }
                         device_t *d = dev_find(mac, 0);
                         if (d) {
                             d->lastSeen = (long long)time(NULL) * 1000;
@@ -789,6 +810,8 @@ static void helper_write_conf(const char *psData)
             }
         }
     }
+
+    for (int k = 0; k < subnetN; k++) sb_putf(&b, "subnet %s\n", subnets[k]);
 
     wchar_t path[MAX_PATH * 2];
     _snwprintf(path, MAX_PATH * 2, L"%s\\ttlfix.conf", g_dataDir);
@@ -1438,8 +1461,15 @@ static void api_device(SOCKET s, const char *body, int blockAlias)
         helper_stop();
     }
 
-    /* a rule nobody enforces is worse than no rule: refuse to report success */
+    /* a rule nobody enforces is worse than no rule: refuse to report success and
+       put the device back, otherwise the interface would show a block that is
+       not being enforced */
     if (wantBlock == 1 && !helper_alive()) {
+        d->blocked = 0;
+        dev_save();
+        helper_write_conf(S.psData);
+        log_add(1, "封禁失败: 数据面未运行, 已回滚 (%s)", d->mac);
+
         sb e;
         sb_init(&e, 512);
         sb_puts(&e, "{\"ok\":false,\"error\":");

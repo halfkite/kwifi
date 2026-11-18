@@ -393,8 +393,9 @@ function updateBlackCard(card, c) {
   let text = c.online === false
     ? (c.lastSeen ? `最后在线 ${timeAgo(c.lastSeen)}` : '离线')
     : '在线';
-  if (c.online !== false && c.blockedDrops > 0) {
-    text += ` · 已拦截 ${Number(c.blockedDrops).toLocaleString()} 个包`;
+  if (c.online !== false) {
+    const drops = Number(c.drops || 0);
+    text += drops > 0 ? ` · 已拦截 ${drops.toLocaleString()} 个包` : ' · 尚未拦截到流量';
   }
   seen.textContent = text;
 }
@@ -431,15 +432,17 @@ function renderDevices(all) {
   for (const c of all) if (c.aliasTo) mergedBy[c.aliasTo] = (mergedBy[c.aliasTo] || 0) + 1;
   const list = all.filter((c) => !c.aliasTo).map((c) => ({ ...c, mergedCount: mergedBy[c.mac] || 0 }));
 
-  const normal = list.filter((c) => !c.blocked);
+  // a blocked device is still connected to the hotspot, only its internet access
+  // is cut, so it stays on its own card - otherwise the block icon would vanish
+  // instead of switching state
   const blocked = list.filter((c) => c.blocked);
 
-  const onlineCount = normal.filter((c) => c.online !== false).length;
-  el.deviceCount.textContent = onlineCount === normal.length ? `${normal.length}` : `${onlineCount}/${normal.length}`;
-  el.devicesEmpty.hidden = normal.length > 0;
+  const onlineCount = list.filter((c) => c.online !== false).length;
+  el.deviceCount.textContent = onlineCount === list.length ? `${list.length}` : `${onlineCount}/${list.length}`;
+  el.devicesEmpty.hidden = list.length > 0;
 
   const seen = new Set();
-  for (const c of normal) {
+  for (const c of list) {
     seen.add(c.mac);
     let card = el.devices.querySelector(`[data-mac="${c.mac}"]`);
     if (!card) card = createDeviceCard(c);
