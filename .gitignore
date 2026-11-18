@@ -1,0 +1,31 @@
+# only the sources belong in git; kwifi.exe comes out of native\build.ps1
+
+# build output
+/kwifi.exe
+/native/*.o
+/native/*.obj
+/native/*.pdb
+/native/*.lib
+/native/respatch.exe
+/native/app.res
+/native/embedded.h
+
+# data written at runtime
+/data/
+/webview/
+*.log
+
+# zig caches
+/.zig/
+
+# archives the CI produces
+/*.zip
+/stage/
+/out/
+/release/
+/signed/
+# kept out of the public repo:
+#   legacy/            the old Node backend, dead code
+#   docs/re-connectify.md   reverse-engineering notes about a commercial product
+/legacy/
+/docs/re-connectify.md

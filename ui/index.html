@@ -1,0 +1,256 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>kwifi</title>
+<script>try{document.documentElement.dataset.theme=localStorage.getItem('rw-theme')||'light'}catch(e){}</script>
+<link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+<div class="aurora" aria-hidden="true"></div>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-dot"></span>
+    <span class="brand-name">kwifi</span>
+  </div>
+
+  <div class="topbar-right">
+    <span id="adminBadge" class="badge badge-warn" hidden>非管理员</span>
+    <span id="dpBadge" class="badge" hidden>数据面</span>
+    <button id="themeBtn" class="ghost-btn icon-only" title="切换深浅色">
+      <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8">
+        <circle cx="12" cy="12" r="4.5"/>
+        <path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5 5l1.4 1.4M17.6 17.6L19 19M19 5l-1.4 1.4M6.4 17.6L5 19"/>
+      </svg>
+    </button>
+    <button id="doctorBtn" class="ghost-btn" title="运行环境诊断">诊断</button>
+    <button id="quitBtn" class="ghost-btn" title="停止热点并退出">退出</button>
+  </div>
+</header>
+
+<main class="layout">
+    <div id="adminBanner" class="banner" hidden>
+      <span class="banner-text">
+        <b>当前不是管理员</b>
+        <small>可以查看设备、改设置，但开启热点、封禁、限速、TTL 需要管理员权限。</small>
+      </span>
+      <button id="elevateBtn" class="btn btn-primary" type="button">授予管理员权限</button>
+    </div>
+  <div class="top-row">
+
+    <section class="card net-card">
+      <div class="card-head">
+        <h2>网络</h2>
+        <button id="editNetBtn" class="ghost-btn small">修改</button>
+      </div>
+
+      <div class="net-state">
+        <span class="dot" id="statusDot"></span>
+        <span id="statusText">正在读取状态…</span>
+        <span class="muted small" id="methodText"></span>
+        <h1 id="ssidTitle" hidden>—</h1>
+      </div>
+
+      <dl class="kv kv-grid">
+        <div><dt>名称</dt><dd id="kvSsid">—</dd></div>
+        <div><dt>密码</dt><dd id="kvPass">••••••••</dd></div>
+        <div><dt>频段</dt><dd id="kvBand">自动</dd></div>
+        <div class="kv-uplink"><dt>上行</dt><dd id="kvUplink">—</dd></div>
+      </dl>
+
+      <div class="spark">
+        <div class="spark-head">
+          <span class="section-label">实时速率</span>
+          <div class="spark-legend">
+            <span><i class="sw sw-down"></i><b id="rateDown">0</b> 下载</span>
+            <span><i class="sw sw-up"></i><b id="rateUp">0</b> 上传</span>
+          </div>
+        </div>
+        <canvas id="chart" height="56"></canvas>
+      </div>
+
+      <div class="policy">
+        <div class="policy-row">
+          <label for="totalMbps">总带宽</label>
+          <span class="num"><input id="totalMbps" type="number" min="0" step="1" inputmode="decimal" /><em>Mbps</em></span>
+        </div>
+        <div class="policy-row">
+          <label for="hostPrio">本机优先级</label>
+          <select id="hostPrio">
+            <option value="1">P1 · 最高</option>
+            <option value="2">P2</option>
+            <option value="3">P3 · 默认</option>
+            <option value="4">P4</option>
+            <option value="5">P5 · 最低</option>
+          </select>
+        </div>
+        <p class="hint" id="policyHint">0 = 自动（按上行链路速率的 90%）</p>
+      </div>
+
+      <div class="net-actions">
+        <button id="restartBtn" class="ghost-btn" title="先关闭再重新开启热点">重启热点</button>
+        <button id="powerBtn" class="power" aria-pressed="false">
+          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+            <path d="M12 3v9" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/>
+            <path d="M6.6 6.6a8 8 0 1 0 10.8 0" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/>
+          </svg>
+          <span id="powerLabel">开启热点</span>
+        </button>
+      </div>
+    </section>
+
+    <section class="card stealth-card">
+      <div class="card-head">
+        <h2>隐身模式</h2>
+        <span class="badge badge-soft">降低被发现风险</span>
+      </div>
+
+      <div class="switch-list">
+        <label class="switch-row">
+          <span class="switch-copy">
+            <b>屏蔽 IPv6</b>
+            <small>校园网常通过 IPv6 给每台设备单独分配地址来识别共享</small>
+          </span>
+          <input type="checkbox" id="tIpv6" class="switch" />
+        </label>
+
+        <label class="switch-row">
+          <span class="switch-copy">
+            <b>屏蔽组播探测</b>
+            <small>阻断 mDNS / LLMNR / NetBIOS，减少下游设备暴露</small>
+          </span>
+          <input type="checkbox" id="tMcast" class="switch" />
+        </label>
+
+        <label class="switch-row">
+          <span class="switch-copy">
+            <b>TTL 归一 <span class="tag" id="ttlTag">WinDivert</span></b>
+            <small>把下游设备的 TTL 统一成 128，抵消最常用的共享检测手段</small>
+          </span>
+          <input type="checkbox" id="tTtl" class="switch" />
+        </label>
+      </div>
+
+      <p class="hint">隐身模式只影响本机转发行为，不能保证 100% 不被检测；请遵守所在网络的使用规定。</p>
+    </section>
+
+    <section class="card settings-card">
+      <div class="card-head">
+        <h2>程序设置</h2>
+        <span class="badge badge-soft">HKCU · Run</span>
+      </div>
+
+      <label class="switch-row">
+        <span class="switch-copy">
+          <b>开机自启</b>
+          <small>登录后自动驻留右下角托盘，不弹出界面窗口</small>
+        </span>
+        <input type="checkbox" id="tAutostart" class="switch" />
+      </label>
+
+      <label class="switch-row">
+        <span class="switch-copy">
+          <b>开机自启热点</b>
+          <small>启动后自动开启热点，连接设备即可上网</small>
+        </span>
+        <input type="checkbox" id="tAutoHotspot" class="switch" />
+      </label>
+
+      <div class="settings-detail">
+        <span class="section-label">启动详情</span>
+        <dl class="kv kv-list">
+          <div><dt>写入位置</dt><dd>注册表 Run 项</dd></div>
+          <div><dt>登录后</dt><dd>托盘常驻</dd></div>
+          <div><dt>兜底方案</dt><dd>启动文件夹</dd></div>
+        </dl>
+
+        <span class="section-label">运行信息</span>
+        <dl class="kv kv-list">
+          <div><dt>监听地址</dt><dd id="listenAddr">127.0.0.1:17899</dd></div>
+          <div><dt>数据面</dt><dd id="dpState">未启动</dd></div>
+          <div><dt>数据目录</dt><dd>%LOCALAPPDATA%\Kwifi</dd></div>
+        </dl>
+      </div>
+
+      <p class="hint" id="autostartHint">默认关闭。开启后会写入注册表 Run 项，不会创建计划任务。</p>
+    </section>
+
+  </div>
+
+  <section class="card devices-card">
+    <div class="card-head">
+      <h2>已连接设备 <span id="deviceCount" class="count">0</span></h2>
+      <span class="muted small">限速即时生效</span>
+    </div>
+    <div id="devices" class="devices"></div>
+    <div id="devicesEmpty" class="empty">
+      <svg viewBox="0 0 24 24" width="34" height="34" aria-hidden="true"><path d="M3 7h18M3 12h18M3 17h12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none"/></svg>
+      <p>还没有设备连接</p>
+      <span class="muted small">开启热点后，连接过的设备会出现在这里</span>
+    </div>
+  </section>
+
+  <section class="card blacklist-card">
+    <div class="card-head">
+      <h2>黑名单 <span id="blackCount" class="count">0</span></h2>
+      <span class="muted small">封禁后一直留在这里，离线也能解封</span>
+    </div>
+    <div id="blacklist" class="devices"></div>
+    <div id="blacklistEmpty" class="empty">
+      <svg viewBox="0 0 24 24" width="30" height="30" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.6" fill="none"/><path d="M6 6l12 12" stroke="currentColor" stroke-width="1.6"/></svg>
+      <p>还没有封禁的设备</p>
+      <span class="muted small">在设备卡片上点 ⛔ 即可加入黑名单</span>
+    </div>
+  </section>
+
+  <section class="card log-card">
+    <div class="card-head"><h2>日志</h2></div>
+    <pre id="log" class="log"></pre>
+  </section>
+</main>
+
+<dialog id="netDialog" class="dialog">
+  <form method="dialog" id="netForm">
+    <h2>网络设置</h2>
+    <label class="field"><span>热点名称</span><input id="fSsid" maxlength="32" required /></label>
+    <label class="field"><span>密码（8-63 位）</span><input id="fPass" minlength="8" maxlength="63" required /></label>
+    <label class="field"><span>频段</span>
+      <select id="fBand">
+        <option value="auto">自动</option>
+        <option value="2.4">2.4 GHz</option>
+        <option value="5">5 GHz</option>
+      </select>
+    </label>
+    <div class="dialog-actions">
+      <button value="cancel" class="ghost-btn" formnovalidate>取消</button>
+      <button id="netSave" value="save" class="primary-btn">保存并重启热点</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="deviceDialog" class="dialog">
+  <form method="dialog" id="deviceForm">
+    <h2>设备设置</h2>
+    <p class="muted small" id="dHint">—</p>
+    <label class="field"><span>名称</span><input id="dAlias" maxlength="40" placeholder="例如：我的 iPhone" /></label>
+    <label class="field"><span>备注</span><input id="dNote" maxlength="80" placeholder="例如：客厅的平板" /></label>
+    <div class="dialog-actions">
+      <button value="cancel" class="ghost-btn" formnovalidate>取消</button>
+      <button id="dSave" value="save" class="primary-btn">保存</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="doctorDialog" class="dialog">
+  <h2>环境诊断</h2>
+  <pre id="doctorOut" class="log"></pre>
+  <div class="dialog-actions"><button value="close" class="ghost-btn">关闭</button></div>
+</dialog>
+
+<div id="toast" class="toast" hidden></div>
+
+<script src="/app.js" type="module"></script>
+</body>
+</html>
