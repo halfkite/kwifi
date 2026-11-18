@@ -49,7 +49,7 @@ Foundation），再让通过审核的开源项目用它的 HSM 签名。签名�
 
 ### 申请步骤
 
-1. 把仓库推到 GitHub 并**公开**，加 OSI 认可的开源许可证（本仓库已加 MIT：`LICENSE`）。
+1. 把仓库推到 GitHub 并**公开**，加 OSI 认可的开源许可证（本仓库已用 MIT：`LICENSE`）。
 2. 至少发布一个 Release（有可下载的构建产物）。
 3. 打开 <https://signpath.org/apply> → 填表：
    - 仓库地址

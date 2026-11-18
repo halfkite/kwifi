@@ -7,7 +7,7 @@
 #   powershell -ExecutionPolicy Bypass -File native\build.ps1
 
 param(
-  [string]$Version = '1.0.0.0',
+  [string]$Version = '0.6.0.0',
   # rebuild ttlfix.exe even if a copy is already present (CI should always do this)
   [switch]$RebuildHelper
 )
@@ -49,10 +49,9 @@ try {
   $exePath = Join-Path $root 'kwifi.exe'
 
   Write-Host '==> resources'
-  if (-not (Test-Path (Join-Path $PSScriptRoot 'respatch.exe'))) {
-    zig cc -target x86_64-windows-gnu -O2 -municode -o respatch.exe respatch.c
-    if ($LASTEXITCODE -ne 0) { throw "respatch build failed (exit $LASTEXITCODE)" }
-  }
+  # always rebuild: a stale respatch.exe silently keeps the old version strings
+  zig cc -target x86_64-windows-gnu -O2 -municode -o respatch.exe respatch.c
+  if ($LASTEXITCODE -ne 0) { throw "respatch build failed (exit $LASTEXITCODE)" }
   if (-not (Test-Path (Join-Path $PSScriptRoot 'app.ico'))) {
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'gen-icon.ps1')
   }

@@ -189,22 +189,23 @@ limit 192.168.137.5 up=512 down=2048 prio=2
 ## Code signing policy
 
 Free code signing provided by [SignPath.io](https://about.signpath.io), certificate by
-[SignPath Foundation](https://signpath.org) — **applied for, not yet active**. Builds
-published before approval are unsigned; every release ships a `SHA256SUMS.txt` so the
-binary can be verified regardless.
+[SignPath Foundation](https://signpath.org) — **申请中，尚未生效**。在批准之前的构建
+未签名，每个 Release 都附带 `SHA256SUMS.txt`，可用 `tools\verify-signature.ps1` 核对。
 
-- Committers and reviewers: repository maintainers
-- Approvers: repository owners (each signing request is approved manually)
-- Privacy policy: this program does not transfer any information to other networked
-  systems unless specifically requested by the user. Hotspot names, passwords, device
-  names and speed limits are stored locally under `%LOCALAPPDATA%\Kwifi\data` and are
-  never uploaded.
-- All binaries are built from this repository by `.github/workflows/build.yml`; no
-  binary is produced outside CI.
-
-If you sign with your own certificate instead, replace the first paragraph with your
-certificate details and keep the rest.
-
+- Committers and reviewers: 仓库维护者
+- Approvers: 仓库所有者（每次签名请求需人工批准）
+- 隐私：本程序不会向你未指定的联网系统传输任何信息。热点名、密码、设备名和限速设置
+  都保存在本地 `%LOCALAPPDATA%\Kwifi\data`，从不上传。
+- 所有二进制都由 `.github/workflows/build.yml` 从本仓库源码构建，没有仓库外产出的文件。
 ## License
 
-MIT — see [LICENSE](LICENSE).
+**MIT** — 可以自由使用、修改、分发，包括商业用途。全文见 [LICENSE](LICENSE)。
+
+许可链：
+
+- 本项目：MIT
+- 数据面依赖 [WinDivert](https://reqrypt.org/windivert.html)：LGPLv3 + 静态链接例外
+- WebView2 运行时：随 Windows/Edge 分发，不打包
+
+用 MIT 的一个直接好处：符合 [SignPath Foundation](https://signpath.org) 对免费开源代码
+签名的要求（OSI 许可证），见下方 Code signing policy。

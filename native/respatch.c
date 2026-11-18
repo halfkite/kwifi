@@ -256,7 +256,7 @@ int wmain(int argc, wchar_t **argv)
     const wchar_t *exePath = argv[1];
     const wchar_t *manifestPath = argv[2];
     const wchar_t *iconPath = argc > 3 ? argv[3] : NULL;
-    char version[32] = "1.0.0.0";
+    char version[32] = "0.6.0.0";
     if (argc > 4) WideCharToMultiByte(CP_UTF8, 0, argv[4], -1, version, sizeof(version), NULL, NULL);
 
     wchar_t desc[128] = L"kwifi \x70ed\x70b9\x63a7\x5236\x53f0";

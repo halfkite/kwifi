@@ -3,7 +3,7 @@
   <assemblyIdentity
       type="win32"
       name="kwifi.hotspot.console"
-      version="1.0.0.0"
+      version="0.6.0.0"
       processorArchitecture="amd64" />
 
   <description>kwifi hotspot console</description>

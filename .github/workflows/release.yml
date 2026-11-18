@@ -54,7 +54,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $tag = '${{ github.ref_name }}'
           $version = ($tag -replace '^v', '')
-          if (-not $version) { $version = '1.0.0.0' }
+          if (-not $version) { $version = '0.6.0.0' }
           & powershell -NoProfile -ExecutionPolicy Bypass -File native\build.ps1 -Version $version -RebuildHelper
           if (-not (Test-Path kwifi.exe)) { throw 'kwifi.exe was not produced' }
 
@@ -148,6 +148,7 @@ jobs:
         with:
           name: kwifi-signed
           path: release/kwifi.exe
+
 
 
 

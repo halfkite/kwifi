@@ -1,94 +1,66 @@
 # 发布到 GitHub
 
-仓库已经初始化好并提交了第一个 commit，剩下的是**创建远程仓库并推送**。下面三步
-大约 3 分钟。
+仓库已经初始化并提交好了，版本定为 **0.6.0**。下面是最快的路径。
 
 ---
 
-## 第 1 步：登录 GitHub（只做一次）
+## 一键发布（推荐）
 
-打开 PowerShell，运行：
+在能访问 github.com 的 PowerShell 里（代理已开）：
 
 ```powershell
+cd D:\ai\redianwifi
+powershell -ExecutionPolicy Bypass -File tools\publish.ps1
+```
+
+脚本会依次做：
+
+1. 把 git 和 gh 指向代理 `127.0.0.1:7897`（可用 `-Proxy` 改）
+2. 检查 gh 是否登录，没登录就带你走一遍 `gh auth login`
+3. 创建公开仓库 `kwifi`，推送 `main`
+4. 打 tag `v0.6.0` 并推送，触发 `release.yml` 自动构建发布
+
+可重复执行：仓库/远程/tag 已存在时会跳过，不会重复创建。
+
+参数：
+
+```powershell
+-Repo kwifi-hotspot      # 换仓库名
+-Tag v0.6.0              # 换版本号
+-Proxy http://127.0.0.1:7890   # 换代理端口
+-SkipTag                 # 只推代码，不发布
+```
+
+---
+
+## 手动做
+
+### 第 1 步：登录（只做一次）
+
+```powershell
+$env:HTTPS_PROXY = "http://127.0.0.1:7897"
 gh auth login
 ```
 
-按提示选：
+选：`GitHub.com` → `HTTPS` → `Yes` → `Login with a web browser`
+记住 8 位码 → 回车开浏览器 → 粘贴 → 授权。
 
-```
-? What account do you want to log into?            GitHub.com
-? What is your preferred protocol for Git operations?  HTTPS
-? Authenticate Git with your GitHub credentials?       Yes
-? How would you like to authenticate?                  Login with a web browser
-```
-
-它会显示一个 **8 位验证码**（形如 `A1B2-C3D4`），按回车打开浏览器，粘贴验证码，
-授权即可。
-
-> 如果你已经登录过 GitHub（`git push` 以前成功过），可以跳过这一步。
-
-验证：
+### 第 2 步：建仓库并推送
 
 ```powershell
-gh auth status
-```
-
----
-
-## 第 2 步：创建仓库并推送
-
-在仓库目录里执行：
-
-```powershell
+git config --global http.https://github.com.proxy http://127.0.0.1:7897
 cd D:\ai\redianwifi
 gh repo create kwifi --public --source=. --remote=origin --push
 ```
 
-这一条命令做四件事：在 GitHub 上建一个叫 `kwifi` 的公开仓库、把 `origin` 指过去、
-推送 `main`、设置上游分支。
-
-如果仓库名被占用，换个名字：
+### 第 3 步：发 0.6.0
 
 ```powershell
-gh repo create kwifi-hotspot --public --source=. --remote=origin --push
+git tag v0.6.0
+git push origin v0.6.0
 ```
 
-### 不想用 gh 命令
-
-在 <https://github.com/new> 手动建一个**空**仓库（不要勾 README / .gitignore / license），
-然后：
-
-```powershell
-cd D:\ai\redianwifi
-git remote add origin https://github.com/<你的用户名>/kwifi.git
-git push -u origin main
-```
-
----
-
-## 第 3 步：发第一个 Release
-
-打 tag 推上去，`release.yml` 会自动构建并发布：
-
-```powershell
-git tag v1.0.0
-git push origin v1.0.0
-```
-
-2～4 分钟后到 `https://github.com/<你的用户名>/kwifi/releases` 就能看到：
-
-- `kwifi.exe`
-- `README.md`、`LICENSE`
-- `SHA256SUMS.txt`
-
-如果构建失败，点仓库的 **Actions** 标签页看日志。
-
-### 只想先跑一次构建、不发版
-
-```powershell
-gh workflow run build.yml
-gh run watch
-```
+2～4 分钟后 `https://github.com/<你>/kwifi/releases` 就有 `kwifi.exe` 和 `SHA256SUMS.txt`。
 
 ---
 
@@ -106,38 +78,47 @@ gh run watch
 > 公开发布有法律风险，也可能导致 SignPath 拒绝签名申请。它留在你的本地磁盘上，
 > 只是不在 git 里。
 
-当前仓库 36 个文件、约 1 MB。
+---
+
+## 版本号在哪
+
+| 位置 | 值 |
+|---|---|
+| git tag | `v0.6.0` |
+| exe 文件属性 | `0.6.0.0`（CI 从 tag 推导） |
+| `native/build.ps1` 默认值 | `0.6.0.0` |
+
+改版本只需打新 tag：`git tag v0.6.1 && git push origin v0.6.1`。
+
+---
+
+## 常见问题
+
+**`dial tcp 57.155.223.240:443` 超时**
+DNS 被污染，gh 不读 Windows 系统代理。先 `$env:HTTPS_PROXY="http://127.0.0.1:7897"`。
+
+**`HTTP 401: Bad credentials`**
+Token 不对。classic token 固定 40 位（`ghp_` + 36 位），复制时容易少一位。用浏览器登录更稳。
+
+**`Permission denied (publickey)`**
+走了 SSH 但没密钥。改 HTTPS：`git remote set-url origin https://github.com/<你>/kwifi.git`
+
+**CI 构建失败**
+看 Actions 日志。本地先验证：`powershell -ExecutionPolicy Bypass -File native\build.ps1 -Version 0.6.0.0`
+
+**想让 CI 里也能签名**
+先按 [SIGNING.md](SIGNING.md) 申请，然后在
+`Settings → Secrets and variables → Actions` 里加配置，见 `.github/workflows/release.yml` 顶部注释。
 
 ---
 
 ## 后续常用命令
 
 ```powershell
-git status                    # 看改动
-git add -A && git commit -m "..."   # 提交
-git push                      # 推送
-git tag v1.0.1 && git push origin v1.0.1   # 发新版
-gh repo view --web            # 浏览器打开仓库
+git status                                    # 看改动
+git add -A; git commit -m "..."               # 提交
+git push                                      # 推送
+git tag v0.6.1; git push origin v0.6.1        # 发新版
+gh run watch                                  # 看 CI
+gh repo view --web                            # 浏览器打开仓库
 ```
-
----
-
-## 常见问题
-
-**`gh: command not found`**
-GitHub CLI 没装：<https://cli.github.com/> 或 `winget install GitHub.cli`。
-
-**推送提示 `Permission denied (publickey)`**
-说明走的是 SSH 但没配密钥。改用 HTTPS：
-
-```powershell
-git remote set-url origin https://github.com/<你的用户名>/kwifi.git
-```
-
-**`raw.githubusercontent.com` 上的 README 图片不显示**
-`docs/*.png` 已提交，路径是相对路径，正常会显示。
-
-**想让 CI 里也能签名**
-先按 [SIGNING.md](SIGNING.md) 申请，然后在仓库
-`Settings → Secrets and variables → Actions` 里加 5 项配置，见 `.github/workflows/release.yml`
-文件顶部的注释。
