@@ -29,3 +29,4 @@
 #   docs/re-connectify.md   reverse-engineering notes about a commercial product
 /legacy/
 /docs/re-connectify.md
+*.pdb

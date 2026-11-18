@@ -182,6 +182,12 @@ __declspec(dllexport) HWND kg_webview_open(HINSTANCE inst, const wchar_t *url,
     wc.lpszClassName = L"KwifiUiWindow";
     wc.hCursor = LoadCursorW(NULL, IDC_ARROW);
     wc.hbrBackground = (HBRUSH)GetStockObject(WHITE_BRUSH);
+    /* the icon lives in the executable (RT_GROUP_ICON 1); registering it on the
+       class makes the title bar and the taskbar pick it up */
+    wc.hIcon = (HICON)LoadImageW(inst, MAKEINTRESOURCEW(1), IMAGE_ICON, 32, 32,
+                                 LR_DEFAULTCOLOR | LR_SHARED);
+    wc.hIconSm = (HICON)LoadImageW(inst, MAKEINTRESOURCEW(1), IMAGE_ICON, 16, 16,
+                                   LR_DEFAULTCOLOR | LR_SHARED);
     RegisterClassExW(&wc);
 
     RECT work;

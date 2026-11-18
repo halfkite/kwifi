@@ -60,6 +60,8 @@ static wchar_t g_data[MAX_PATH];
 static wchar_t g_exe[MAX_PATH];
 
 static void mkdirs(wchar_t *path);
+static HICON load_app_icon(int size);
+static void compute_data_dir(wchar_t *out, size_t cch);
 
 /* autostart helpers (defined further down) */
 static BOOL sid_of_process(DWORD pid, wchar_t *out, size_t cch);
@@ -82,7 +84,8 @@ static void logf_(const char *fmt, ...)
     vsnprintf(line, sizeof(line), fmt, ap);
     va_end(ap);
 
-    _snprintf(path, sizeof(path), "%ls\\data\\kwifi.log", g_root);
+    if (g_data[0]) _snprintf(path, sizeof(path), "%ls\\kwifi.log", g_data);
+    else _snprintf(path, sizeof(path), "%ls\\data\\kwifi.log", g_root);
     HANDLE h = CreateFileA(path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
                            NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if (h == INVALID_HANDLE_VALUE) {
@@ -185,9 +188,8 @@ static BOOL start_service(void)
     if (g_serviceStarted) return TRUE;
 
     wchar_t dataDir[MAX_PATH * 2];
-    wchar_t *env = _wgetenv(L"KWIFI_DATA");
-    if (env && *env) lstrcpynW(dataDir, env, MAX_PATH * 2);
-    else _snwprintf(dataDir, MAX_PATH * 2, L"%s\\data", g_root);
+    if (g_data[0]) lstrcpynW(dataDir, g_data, MAX_PATH * 2);
+    else compute_data_dir(dataDir, MAX_PATH * 2);
 
     int port = 17899;
     wchar_t *penv = _wgetenv(L"KWIFI_PORT");
@@ -280,17 +282,16 @@ static void compute_data_dir(wchar_t *out, size_t cch)
         lstrcpynW(out, env, (int)cch);
         return;
     }
-    /* a checkout ships native\ next to the exe folder; keep data there */
-    if (g_root[0]) {
-        wchar_t probe[MAX_PATH * 2];
-        _snwprintf(probe, MAX_PATH * 2, L"%s\\native\\build.ps1", g_root);
-        if (GetFileAttributesW(probe) != INVALID_FILE_ATTRIBUTES) {
-            _snwprintf(out, cch, L"%s\\data", g_root);
-            return;
-        }
-    }
+    /* settings never sit next to the exe: the program may be run from a read-only
+       or portable medium, and one folder keeps upgrades and reinstalls intact.
+       KWIFI_DATA overrides it for tests. */
     wchar_t appdata[MAX_PATH] = {0};
-    GetEnvironmentVariableW(L"LOCALAPPDATA", appdata, MAX_PATH);
+    if (GetEnvironmentVariableW(L"LOCALAPPDATA", appdata, MAX_PATH) == 0 || !appdata[0]) {
+        if (GetEnvironmentVariableW(L"USERPROFILE", appdata, MAX_PATH) == 0) {
+            lstrcpynW(appdata, L"C:\\", MAX_PATH);
+        }
+        lstrcatW(appdata, L"\\AppData\\Local");
+    }
     _snwprintf(out, cch, L"%s\\Kwifi\\data", appdata);
 }
 
@@ -497,7 +498,8 @@ static void autostart_result(int ok, const wchar_t *error, const wchar_t *comman
     if (g_asResult[0]) {
         lstrcpynW(dir, g_asResult, MAX_PATH * 2);
     } else {
-        _snwprintf(dir, MAX_PATH * 2, L"%s\\data", g_root);
+        if (g_data[0]) lstrcpynW(dir, g_data, MAX_PATH * 2);
+        else _snwprintf(dir, MAX_PATH * 2, L"%s\\data", g_root);
     }
     mkdirs(dir);
 
@@ -686,7 +688,13 @@ static void open_ui(void)
     }
 
     logf_("open_ui: creating webview window");
-    kg_webview_open(g_inst, url, profile, loader);
+    HWND ui = kg_webview_open(g_inst, url, profile, loader);
+    if (ui) {
+        HICON big = load_app_icon(32);
+        HICON small = load_app_icon(16);
+        if (big) SendMessageW(ui, WM_SETICON, ICON_BIG, (LPARAM)big);
+        if (small) SendMessageW(ui, WM_SETICON, ICON_SMALL, (LPARAM)small);
+    }
 }
 static BOOL ui_window_exists(void)
 {
@@ -827,8 +835,10 @@ static void do_command(HWND hwnd, int id)
         balloon(hwnd, APP_TITLE, L"热点已停止");
         break;
     case 4: {
+        /* open the folder that actually holds the settings */
         wchar_t dir[MAX_PATH];
-        _snwprintf(dir, MAX_PATH, L"%s\\data", g_root);
+        if (g_data[0]) lstrcpynW(dir, g_data, MAX_PATH);
+        else _snwprintf(dir, MAX_PATH, L"%s\\data", g_root);
         ShellExecuteW(NULL, L"open", dir, NULL, NULL, SW_SHOWNORMAL);
         break;
     }
@@ -858,7 +868,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         if (wParam == TIMER_ID) {
             /* the web UI asked to quit: the server writes a flag file */
             wchar_t quitFile[MAX_PATH * 2];
-            _snwprintf(quitFile, MAX_PATH * 2, L"%s\\data\\.quit", g_root);
+            if (g_data[0]) _snwprintf(quitFile, MAX_PATH * 2, L"%s\\.quit", g_data);
+    else _snwprintf(quitFile, MAX_PATH * 2, L"%s\\data\\.quit", g_root);
             if (GetFileAttributesW(quitFile) != INVALID_FILE_ATTRIBUTES) {
                 DeleteFileW(quitFile);
                 close_ui();
@@ -920,6 +931,18 @@ static void ensure_parent_dirs(wchar_t *path)
     }
 }
 
+/* the icon lives in the executable (written by respatch); fall back to the
+   generated one when a build skipped the resource step */
+static HICON load_app_icon(int size)
+{
+    HINSTANCE mod = GetModuleHandleW(NULL);
+    HICON h = (HICON)LoadImageW(mod, MAKEINTRESOURCEW(1), IMAGE_ICON,
+                                size, size, LR_DEFAULTCOLOR | LR_SHARED);
+    if (!h) h = (HICON)LoadImageW(mod, MAKEINTRESOURCEW(1), IMAGE_ICON,
+                                  0, 0, LR_DEFAULTCOLOR | LR_SHARED | LR_DEFAULTSIZE);
+    if (!h) h = make_icon(size);
+    return h;
+}
 static void mkdirs(wchar_t *path)
 {
     /* SHCreateDirectoryExW builds every missing level; the hand rolled loop
@@ -1325,6 +1348,22 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdline, int show)
         wchar_t data_dir[MAX_PATH * 2];
         compute_data_dir(data_dir, MAX_PATH * 2);
         mkdirs(data_dir);
+
+        /* a restricted profile, a read-only roaming folder or a blocked path must
+           not leave the backend unable to save anything: fall back to TEMP */
+        wchar_t probe[MAX_PATH * 2];
+        _snwprintf(probe, MAX_PATH * 2, L"%s\\.writable", data_dir);
+        HANDLE h = CreateFileW(probe, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
+                               FILE_ATTRIBUTE_TEMPORARY, NULL);
+        if (h != INVALID_HANDLE_VALUE) {
+            CloseHandle(h);
+            DeleteFileW(probe);
+        } else {
+            wchar_t tmp[MAX_PATH] = {0};
+            GetTempPathW(MAX_PATH, tmp);
+            _snwprintf(data_dir, MAX_PATH * 2, L"%sKwifi-data", tmp);
+            mkdirs(data_dir);
+        }
         lstrcpynW(g_data, data_dir, MAX_PATH);
     }
 
@@ -1439,7 +1478,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdline, int show)
 
     if (already_running()) return 0;
 
-    g_icon = make_icon(16);
+    g_icon = load_app_icon(16);
 
     WNDCLASSEXW wc;
     ZeroMemory(&wc, sizeof(wc));
@@ -1447,6 +1486,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdline, int show)
     wc.lpfnWndProc = WndProc;
     wc.hInstance = inst;
     wc.lpszClassName = L"KwifiTrayWnd";
+    wc.hIcon = load_app_icon(32);
+    wc.hIconSm = load_app_icon(16);
     RegisterClassExW(&wc);
 
     /* a real (but never shown) top-level window: message-only windows cannot
