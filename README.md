@@ -76,6 +76,8 @@ powershell -ExecutionPolicy Bypass -File native\build.ps1
 - 所有二进制均由 [`.github/workflows/build.yml`](.github/workflows/build.yml) 从本仓库
   源码构建，没有仓库外产出的文件
 
+申请与接入细节见 [`docs/SIGNPATH.md`](docs/SIGNPATH.md)。
+
 ## License
 
 MIT，见 [LICENSE](LICENSE)。
