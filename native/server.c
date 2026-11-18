@@ -795,7 +795,12 @@ static void helper_write_conf(const char *psData)
                         if (d) {
                             d->lastSeen = (long long)time(NULL) * 1000;
                             if (!d->ip[0]) lstrcpynA(d->ip, ip2, sizeof(d->ip));
-                            if (d->blocked) sb_putf(&b, "block %s\n", ip2);
+                            if (d->blocked) {
+                                sb_putf(&b, "block %s\n", ip2);
+                                /* the MAC rule also stops IPv6, which the
+                                   address rule cannot see at all */
+                                if (d->mac[0]) sb_putf(&b, "blockmac %s\n", d->mac);
+                            }
                             if (d->upMbps || d->downMbps || d->prio != 3) {
                                 sb_putf(&b, "limit %s up=%d down=%d prio=%d\n", ip2,
                                         d->upMbps * 1000, d->downMbps * 1000, d->prio);
@@ -1019,7 +1024,9 @@ static void poll_once(int full)
     } else if (helper_alive()) {
         helper_stop();
     }
-    if (helper_alive()) helper_read_stats();
+    /* read the counters whenever the file is there: a helper that just exited
+       leaves the last numbers behind, and showing them beats showing zero */
+    helper_read_stats();
 }
 
 /* ---------------- SSE broadcast ---------------- */

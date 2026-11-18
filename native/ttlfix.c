@@ -114,6 +114,83 @@ static void subnet_add(uint32_t base, uint32_t mask)
     }
 }
 
+/* Blocking by address only covers IPv4. A tethered phone browses over IPv6
+   just as happily, and that traffic used to sail straight through. The Ethernet
+   header carries the client MAC for every protocol, so matching on it blocks
+   everything the client sends or receives. */
+#define MAX_BLOCKMAC 64
+static unsigned char g_blockmac[MAX_BLOCKMAC][6];
+static int g_blockmac_n = 0;
+
+static void blockmac_reset(void) { g_blockmac_n = 0; }
+
+static int hexval(int c)
+{
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+static int mac_parse(const char *s, unsigned char out[6])
+{
+    for (int i = 0; i < 6; i++) {
+        int hi = hexval(s[0]), lo = hexval(s[1]);
+        if (hi < 0 || lo < 0) return 0;
+        out[i] = (unsigned char)((hi << 4) | lo);
+        s += 2;
+        if (i < 5) {
+            if (*s == ':' || *s == '-') s++;
+            else return 0;
+        }
+    }
+    return 1;
+}
+
+static void blockmac_add(const unsigned char mac[6])
+{
+    for (int i = 0; i < g_blockmac_n; i++) {
+        if (memcmp(g_blockmac[i], mac, 6) == 0) return;
+    }
+    if (g_blockmac_n < MAX_BLOCKMAC) {
+        memcpy(g_blockmac[g_blockmac_n], mac, 6);
+        g_blockmac_n++;
+    }
+}
+
+static int mac_blocked(const unsigned char mac[6])
+{
+    for (int i = 0; i < g_blockmac_n; i++) {
+        if (memcmp(g_blockmac[i], mac, 6) == 0) return 1;
+    }
+    return 0;
+}
+
+/* Ethernet II / VLAN tagged / ARP / IPv4 / IPv6 all start with the MAC pair */
+static int eth_macs(const unsigned char *p, UINT len,
+                    const unsigned char **dst, const unsigned char **src)
+{
+    if (len < 14) return 0;
+    unsigned int et = ((unsigned int)p[12] << 8) | p[13];
+    if (et == 0x0800 || et == 0x86DD || et == 0x0806 ||
+        et == 0x8100 || et == 0x88A8) {
+        *dst = p;
+        *src = p + 6;
+        return 1;
+    }
+    return 0;
+}
+
+/* one place decides whether a frame belongs to a blocked client; the run loop
+   and --selftest both call this so the test cannot drift from the real path */
+static int blocked_frame(const unsigned char *p, UINT len)
+{
+    if (g_blockmac_n == 0) return 0;
+    const unsigned char *sm = NULL, *dm = NULL;
+    if (!eth_macs(p, len, &dm, &sm)) return 0;
+    return (sm && mac_blocked(sm)) || (dm && mac_blocked(dm));
+}
+
 static int is_client_ip(uint32_t ip)
 {
     for (int i = 0; i < g_subnet_n; i++) {
@@ -266,6 +343,7 @@ static void load_config(const char *path)
     }
 
     subnet_reset();
+    blockmac_reset();
 
     char line[512];
     while (fgets(line, sizeof(line), f)) {
@@ -317,6 +395,11 @@ static void load_config(const char *path)
                 uint32_t mask = bits >= 32 ? 0xFFFFFFFFu : (0xFFFFFFFFu << (32 - bits));
                 subnet_add(base, mask);
             }
+        } else if (strncmp(p, "blockmac ", 9) == 0) {
+            unsigned char mac[6];
+            char *q = p + 9;
+            while (*q == ' ' || *q == '\t') q++;
+            if (mac_parse(q, mac)) blockmac_add(mac);
         } else if (strncmp(p, "block ", 6) == 0) {
             unsigned a, b, c, d;
             if (sscanf(p + 6, "%u.%u.%u.%u", &a, &b, &c, &d) == 4) {
@@ -448,6 +531,14 @@ static int selftest(void)
     }
     if (!blocked) printf("  blocked  : (none)\n");
 
+    /* prove the MAC rule actually rejects a frame from the blocked client */
+    if (g_blockmac_n > 0) {
+        int dropped = blocked_frame(eth, sizeof(eth));
+        printf("  blockmac : %d rule(s), frame to/from client %s\n",
+               g_blockmac_n, dropped ? "DROPPED" : "passed  FAIL");
+        if (!dropped) bad++;
+    }
+
     printf("%s\n", bad ? "parse self test FAILED" : "parse self test passed");
     return bad ? 1 : 0;
 }
@@ -511,6 +602,19 @@ int main(int argc, char **argv)
 
         g_packets++;
         int keep = 1;
+
+        /* MAC first: covers IPv4, IPv6 and anything else the client sends or
+           receives, and survives a DHCP address change */
+        if (blocked_frame(packet, packet_len)) {
+            g_dropped++;
+            DWORD mac_now = now_ms();
+            refill_budget(mac_now);
+            if (config_path && mac_now - last_reload >= RELOAD_MS) {
+                last_reload = mac_now;
+                load_config(config_path);
+            }
+            continue;
+        }
 
         int off = addr.IPv6 ? -1 : ipv4_offset(packet, packet_len);
         if (off >= 0 && packet_len >= (UINT)(off + 20)) {
