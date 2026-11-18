@@ -35,6 +35,8 @@
 #include <wchar.h>
 #include <math.h>
 #include <stdarg.h>
+#include <winsvc.h>
+#include <shlobj.h>
 
 #define APP_TITLE   L"kwifi"
 
@@ -278,10 +280,14 @@ static void compute_data_dir(wchar_t *out, size_t cch)
         lstrcpynW(out, env, (int)cch);
         return;
     }
-    if (GetFileAttributesW(L"..\\package.json") != INVALID_FILE_ATTRIBUTES && g_root[0]) {
-        /* developer checkout: keep data next to the sources */
-        _snwprintf(out, cch, L"%s\\data", g_root);
-        return;
+    /* a checkout ships native\ next to the exe folder; keep data there */
+    if (g_root[0]) {
+        wchar_t probe[MAX_PATH * 2];
+        _snwprintf(probe, MAX_PATH * 2, L"%s\\native\\build.ps1", g_root);
+        if (GetFileAttributesW(probe) != INVALID_FILE_ATTRIBUTES) {
+            _snwprintf(out, cch, L"%s\\data", g_root);
+            return;
+        }
     }
     wchar_t appdata[MAX_PATH] = {0};
     GetEnvironmentVariableW(L"LOCALAPPDATA", appdata, MAX_PATH);
@@ -923,6 +929,263 @@ static void mkdirs(wchar_t *path)
     }
 }
 
+/* ---------------- windows service ----------------
+ *
+ * Running the backend as a service is what removes the UAC prompt from normal
+ * use: the service is installed once (that single prompt is unavoidable), then
+ * it starts at boot as LocalSystem and the interface connects over loopback as a
+ * plain user. Nothing in the daily flow needs elevation again.
+ */
+
+#define KWIFI_SVC_NAME    L"kwifi"
+#define KWIFI_SVC_DISPLAY L"kwifi hotspot service"
+#define KWIFI_SVC_DESC    L"kwifi backend. Controls the hotspot, per-device limits and the device list. The interface connects to it on 127.0.0.1."
+
+static SERVICE_STATUS_HANDLE g_svcHandle = NULL;
+static SERVICE_STATUS g_svcStatus;
+static HANDLE g_svcStop = NULL;
+static int g_runningAsService = 0;
+
+static void svc_report(DWORD state, DWORD exitCode, DWORD waitHint)
+{
+    static DWORD checkpoint = 1;
+
+    g_svcStatus.dwServiceType = SERVICE_WIN32_OWN_PROCESS;
+    g_svcStatus.dwCurrentState = state;
+    g_svcStatus.dwControlsAccepted =
+        (state == SERVICE_START_PENDING || state == SERVICE_STOP_PENDING)
+            ? 0
+            : (SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN);
+    g_svcStatus.dwWin32ExitCode = exitCode;
+    g_svcStatus.dwServiceSpecificExitCode = 0;
+    g_svcStatus.dwCheckPoint =
+        (state == SERVICE_START_PENDING || state == SERVICE_STOP_PENDING) ? checkpoint++ : 0;
+    g_svcStatus.dwWaitHint = waitHint;
+
+    if (g_svcHandle) SetServiceStatus(g_svcHandle, &g_svcStatus);
+}
+
+static DWORD WINAPI svc_ctrl(DWORD control, DWORD eventType, void *data, void *context)
+{
+    (void)eventType;
+    (void)data;
+    (void)context;
+
+    if (control == SERVICE_CONTROL_STOP || control == SERVICE_CONTROL_SHUTDOWN) {
+        svc_report(SERVICE_STOP_PENDING, NO_ERROR, 8000);
+        if (g_svcStop) SetEvent(g_svcStop);
+    } else if (control == SERVICE_CONTROL_INTERROGATE) {
+        svc_report(g_svcStatus.dwCurrentState, NO_ERROR, 0);
+    }
+    return NO_ERROR;
+}
+
+/* service state lives under ProgramData so every user shares it */
+static void service_data_dir(wchar_t *out, size_t cch)
+{
+    wchar_t *env = _wgetenv(L"KWIFI_DATA");
+    if (env && *env) {
+        lstrcpynW(out, env, (int)cch);
+        return;
+    }
+
+    wchar_t common[MAX_PATH] = {0};
+    if (FAILED(SHGetFolderPathW(NULL, CSIDL_COMMON_APPDATA, NULL, 0, common))) {
+        if (GetEnvironmentVariableW(L"ProgramData", common, MAX_PATH) == 0) {
+            lstrcpynW(common, L"C:\\ProgramData", MAX_PATH);
+        }
+    }
+    _snwprintf(out, cch, L"%s\\Kwifi\\data", common);
+}
+
+static void WINAPI svc_main(DWORD argc, wchar_t **argv)
+{
+    (void)argc;
+    (void)argv;
+
+    g_runningAsService = 1;
+    g_svcHandle = RegisterServiceCtrlHandlerExW(KWIFI_SVC_NAME, svc_ctrl, NULL);
+    if (!g_svcHandle) return;
+
+    svc_report(SERVICE_START_PENDING, NO_ERROR, 8000);
+
+    g_svcStop = CreateEventW(NULL, TRUE, FALSE, NULL);
+    if (!g_svcStop) {
+        svc_report(SERVICE_STOPPED, GetLastError(), 0);
+        return;
+    }
+
+    wchar_t dataDir[MAX_PATH * 2];
+    service_data_dir(dataDir, MAX_PATH * 2);
+    mkdirs(dataDir);
+
+    wchar_t exeDir[MAX_PATH];
+    lstrcpynW(exeDir, g_exe, MAX_PATH);
+    wchar_t *slash = wcsrchr(exeDir, L'\\');
+    if (slash) *slash = 0;
+
+    srv_start(NULL, exeDir, dataDir, 17899);
+
+    svc_report(SERVICE_RUNNING, NO_ERROR, 0);
+    WaitForSingleObject(g_svcStop, INFINITE);
+
+    srv_stop();
+    CloseHandle(g_svcStop);
+    g_svcStop = NULL;
+    svc_report(SERVICE_STOPPED, NO_ERROR, 0);
+}
+
+int kwifi_is_service(void)
+{
+    return g_runningAsService;
+}
+
+/* ---------------- service install / remove / query ---------------- */
+
+static int service_installed(void)
+{
+    SC_HANDLE scm = OpenSCManagerW(NULL, NULL, SC_MANAGER_CONNECT);
+    if (!scm) return 0;
+    SC_HANDLE svc = OpenServiceW(scm, KWIFI_SVC_NAME, SERVICE_QUERY_STATUS);
+    int found = svc ? 1 : 0;
+    if (svc) CloseServiceHandle(svc);
+    CloseServiceHandle(scm);
+    return found;
+}
+
+static int service_running_state(void)
+{
+    SC_HANDLE scm = OpenSCManagerW(NULL, NULL, SC_MANAGER_CONNECT);
+    if (!scm) return 0;
+    SC_HANDLE svc = OpenServiceW(scm, KWIFI_SVC_NAME, SERVICE_QUERY_STATUS);
+    int running = 0;
+    if (svc) {
+        SERVICE_STATUS st;
+        if (QueryServiceStatus(svc, &st) && st.dwCurrentState == SERVICE_RUNNING) running = 1;
+        CloseServiceHandle(svc);
+    }
+    CloseServiceHandle(scm);
+    return running;
+}
+
+/* copy the settings this user already has into the machine-wide folder */
+static void service_migrate_data(void)
+{
+    wchar_t to[MAX_PATH * 2];
+    wchar_t appdata[MAX_PATH] = {0};
+    GetEnvironmentVariableW(L"LOCALAPPDATA", appdata, MAX_PATH);
+    if (!appdata[0]) return;
+
+    service_data_dir(to, MAX_PATH * 2);
+    mkdirs(to);
+
+    const wchar_t *files[] = { L"config.json", L"devices.json" };
+    for (int i = 0; i < 2; i++) {
+        wchar_t src[MAX_PATH * 2], dst[MAX_PATH * 2];
+        _snwprintf(src, MAX_PATH * 2, L"%s\\Kwifi\\data\\%s", appdata, files[i]);
+        if (GetFileAttributesW(src) == INVALID_FILE_ATTRIBUTES) continue;
+
+        _snwprintf(dst, MAX_PATH * 2, L"%s\\%s", to, files[i]);
+        if (GetFileAttributesW(dst) != INVALID_FILE_ATTRIBUTES) continue;
+
+        if (CopyFileW(src, dst, TRUE)) logf_("migrated %ls", dst);
+    }
+}
+
+static int service_install(void)
+{
+    SC_HANDLE scm = OpenSCManagerW(NULL, NULL, SC_MANAGER_ALL_ACCESS);
+    if (!scm) {
+        wprintf(L"error: cannot open the service manager (%lu). Run as administrator.\n",
+                (unsigned long)GetLastError());
+        return 1;
+    }
+
+    wchar_t binPath[MAX_PATH * 2];
+    _snwprintf(binPath, MAX_PATH * 2, L"\"%s\" --service", g_exe);
+
+    SC_HANDLE svc = CreateServiceW(
+        scm, KWIFI_SVC_NAME, KWIFI_SVC_DISPLAY,
+        SERVICE_ALL_ACCESS, SERVICE_WIN32_OWN_PROCESS, SERVICE_AUTO_START,
+        SERVICE_ERROR_NORMAL, binPath, NULL, NULL, NULL, NULL, NULL);
+
+    if (!svc && GetLastError() == ERROR_SERVICE_EXISTS) {
+        svc = OpenServiceW(scm, KWIFI_SVC_NAME, SERVICE_ALL_ACCESS);
+        if (svc) {
+            ChangeServiceConfigW(svc, SERVICE_NO_CHANGE, SERVICE_AUTO_START,
+                                 SERVICE_NO_CHANGE, binPath, NULL, NULL, NULL, NULL, NULL, NULL);
+        }
+    }
+
+    int rc = 0;
+    if (!svc) {
+        wprintf(L"error: CreateService failed (%lu)\n", (unsigned long)GetLastError());
+        rc = 1;
+    } else {
+        SERVICE_DESCRIPTIONW desc;
+        desc.lpDescription = (LPWSTR)KWIFI_SVC_DESC;
+        ChangeServiceConfig2W(svc, SERVICE_CONFIG_DESCRIPTION, &desc);
+
+        /* delayed start would leave the hotspot unavailable right after boot */
+        SERVICE_DELAYED_AUTO_START_INFO delayed;
+        delayed.fDelayedAutostart = FALSE;
+        ChangeServiceConfig2W(svc, SERVICE_CONFIG_DELAYED_AUTO_START_INFO, &delayed);
+
+        service_migrate_data();
+
+        /* the tray should come back at login; it does not need admin */
+        kwifi_autostart_set(1, NULL, 0);
+
+        if (!StartServiceW(svc, 0, NULL)) {
+            DWORD err = GetLastError();
+            if (err != ERROR_SERVICE_ALREADY_RUNNING) {
+                wprintf(L"warning: StartService failed (%lu); start it from services.msc\n",
+                        (unsigned long)err);
+            }
+        } else {
+            wprintf(L"service started\n");
+        }
+        CloseServiceHandle(svc);
+        wprintf(L"service installed: %ls\n", KWIFI_SVC_NAME);
+    }
+
+    CloseServiceHandle(scm);
+    return rc;
+}
+
+static int service_remove(void)
+{
+    SC_HANDLE scm = OpenSCManagerW(NULL, NULL, SC_MANAGER_CONNECT);
+    if (!scm) {
+        wprintf(L"error: run as administrator\n");
+        return 1;
+    }
+
+    SC_HANDLE svc = OpenServiceW(scm, KWIFI_SVC_NAME, SERVICE_STOP | DELETE | SERVICE_QUERY_STATUS);
+    if (!svc) {
+        wprintf(L"service is not installed\n");
+        CloseServiceHandle(scm);
+        return 0;
+    }
+
+    SERVICE_STATUS st;
+    if (ControlService(svc, SERVICE_CONTROL_STOP, &st)) {
+        wprintf(L"stopping...\n");
+        for (int i = 0; i < 40; i++) {
+            Sleep(250);
+            if (!QueryServiceStatus(svc, &st)) break;
+            if (st.dwCurrentState == SERVICE_STOPPED) break;
+        }
+    }
+
+    int rc = DeleteService(svc) ? 0 : 1;
+    CloseServiceHandle(svc);
+    CloseServiceHandle(scm);
+
+    kwifi_autostart_set(0, NULL, 0);
+    wprintf(L"%s\n", rc == 0 ? L"service removed" : L"service removal failed");
+    return rc;
+}
 /* ---------------- silent elevation via a scheduled task ----------------
  *
  * UAC only ever asks for consent once: when the task is created. Afterwards the
@@ -1065,6 +1328,32 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdline, int show)
         lstrcpynW(g_data, data_dir, MAX_PATH);
     }
 
+    /* ---- service entry points ---------------------------------------- */
+    if (wcsstr(cmdline, L"--service") && !wcsstr(cmdline, L"--service-")) {
+        SERVICE_TABLE_ENTRYW table[] = {
+            { (LPWSTR)KWIFI_SVC_NAME, svc_main },
+            { NULL, NULL }
+        };
+        StartServiceCtrlDispatcherW(table);
+        return 0;
+    }
+    {
+        wchar_t *a = wcsstr(cmdline, L"--install-service");
+        if (a) return service_install();
+
+        a = wcsstr(cmdline, L"--uninstall-service");
+        if (a) return service_remove();
+
+        a = wcsstr(cmdline, L"--service-status");
+        if (a) {
+            int inst = service_installed();
+            int run = service_running_state();
+            wprintf(L"%s\n", inst ? (run ? L"installed running" : L"installed stopped")
+                                  : L"not installed");
+            return inst ? 0 : 1;
+        }
+    }
+
     /* controlling the hotspot needs admin rights; relaunch once with runas and
        mark the child so it never loops.
        --tray (the autostart entry) only asks for elevation when the hotspot is
@@ -1171,7 +1460,12 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdline, int show)
 
     BOOL wantsUi = !tray_only || showui_marker_take();
 
-    if (!ensure_service()) {
+    /* when the service is up it owns the backend; this process only needs the
+       tray and the window, and it never has to ask for administrator rights */
+    BOOL backendReady = service_alive() ? TRUE : ensure_service();
+    if (backendReady && service_running_state()) logf_("backend: shared service");
+
+    if (!backendReady) {
         balloon(g_hwnd, APP_TITLE, L"本地服务启动失败，请查看 data\\server.log");
     } else if (!wantsUi) {
         logf_("tray only: interface not opened");
@@ -1240,3 +1534,10 @@ void kwifi_request_elevation(void)
     /* the elevated copy owns the tray now */
     if (g_hwnd) PostMessageW(g_hwnd, WM_CLOSE, 0, 0);
 }
+
+/* ---------------- exposed to the backend ---------------- */
+
+int kwifi_service_installed(void) { return service_installed(); }
+int kwifi_service_running(void)   { return service_running_state(); }
+int kwifi_service_install(void)   { return service_install() == 0 ? 1 : 0; }
+int kwifi_service_remove(void)    { return service_remove() == 0 ? 1 : 0; }

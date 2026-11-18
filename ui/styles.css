@@ -968,3 +968,9 @@ html[data-theme="dark"] .banner {
 }
 html[data-theme="dark"] .banner-text b { color: #fcd34d; }
 html[data-theme="dark"] .banner-text small { color: #fbbf24; }
+
+/* ---------- v19: backend-service block in the settings card ---------- */
+.svc-actions { display: flex; gap: 8px; margin-top: 10px; }
+.svc-actions .btn { flex: 0 0 auto; }
+.svc-actions .btn[hidden] { display: none; }
+.settings-card .kv-list dd#svcState { font-weight: 600; }

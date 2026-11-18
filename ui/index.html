@@ -159,6 +159,16 @@
       </label>
 
       <div class="settings-detail">
+        <span class="section-label">后台服务</span>
+        <dl class="kv kv-list">
+          <div><dt>状态</dt><dd id="svcState">未安装</dd></div>
+          <div><dt>装好后</dt><dd>热点在后台运行，界面不再需要管理员</dd></div>
+        </dl>
+        <div class="svc-actions">
+          <button id="svcInstall" class="btn" type="button">安装服务</button>
+          <button id="svcRemove" class="btn btn-ghost" type="button" hidden>卸载服务</button>
+        </div>
+
         <span class="section-label">启动详情</span>
         <dl class="kv kv-list">
           <div><dt>写入位置</dt><dd>注册表 Run 项</dd></div>

@@ -754,6 +754,67 @@ el.elevateBtn?.addEventListener('click', async () => {
 
 refreshAdmin();
 
+// ---------------- backend as a Windows service ----------------
+// Installing the service is the one action that needs admin; once it is running
+// the interface never asks for elevation again.
+
+async function loadService() {
+  try {
+    const r = await api('/api/service');
+    if (!r.ok) return;
+    const { installed, running } = r.data || {};
+    el.svcState.textContent = !installed
+      ? '未安装'
+      : running
+        ? '已安装，运行中'
+        : '已安装，未运行';
+    el.svcInstall.hidden = Boolean(installed);
+    el.svcRemove.hidden = !installed;
+  } catch {}
+}
+
+async function setService(action) {
+  const btn = action === 'install' ? el.svcInstall : el.svcRemove;
+  const label = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '处理中…';
+  try {
+    const r = await api('/api/service', {
+      method: 'POST',
+      body: JSON.stringify({ action }),
+    });
+    if (r.ok) {
+      toast(action === 'install' ? '服务已安装并在后台运行' : '服务已卸载');
+      localStorage.removeItem('kwifiPendingService');
+      await loadService();
+    } else if (String(r.error || '').includes('管理员')) {
+      // remember the intent, then relaunch elevated; the new window finishes it
+      localStorage.setItem('kwifiPendingService', action);
+      toast('需要管理员权限，正在请求…');
+      await api('/api/elevate', { method: 'POST' });
+    } else {
+      toast(r.error || '操作失败', true);
+    }
+  } catch (e) {
+    toast(e.message, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = label;
+  }
+}
+
+el.svcInstall?.addEventListener('click', () => setService('install'));
+el.svcRemove?.addEventListener('click', () => setService('remove'));
+
+(async () => {
+  await loadService();
+  const pending = localStorage.getItem('kwifiPendingService');
+  if (pending) {
+    localStorage.removeItem('kwifiPendingService');
+    await setService(pending);
+  }
+})();
+
 // runtime facts shown in the settings card
 const dpState = $('#dpState');
 if (dpState) dpState.textContent = '未启动';

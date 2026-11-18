@@ -14,7 +14,7 @@
 
 param(
   [string]$Repo = 'kwifi',
-  [string]$Tag = 'v0.6.0',
+  [string]$Tag = '',
   [string]$Proxy = 'http://127.0.0.1:7897',
   [switch]$SkipTag
 )
@@ -22,6 +22,11 @@ param(
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 Set-Location $root
+
+if (-not $Tag) {
+  $v = (Get-Content (Join-Path $root 'VERSION') -Raw).Trim()
+  $Tag = "v$v"
+}
 
 # run a native command and return its exit code without tripping $ErrorActionPreference
 function Invoke-Quiet {

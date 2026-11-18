@@ -1473,6 +1473,36 @@ static void api_autostart(SOCKET s, const char *body, int isPost)
     sb_free(&b);
 }
 
+/* turning the backend into a Windows service is what removes the UAC prompt */
+static void api_service(SOCKET s, const char *body, int isPost)
+{
+    if (isPost) {
+        char action[16] = {0};
+        j_get_str(body, "action", action, sizeof(action));
+
+        int enable = !strcmp(action, "install");
+        int ok = enable ? kwifi_service_install() : kwifi_service_remove();
+        if (!ok) {
+            sb e;
+            sb_init(&e, 256);
+            sb_puts(&e, "{\"ok\":false,\"error\":\"需要管理员权限\"}");
+            http_json(s, 200, e.p);
+            sb_free(&e);
+            return;
+        }
+        log_add(0, enable ? "已安装 Windows 服务" : "已移除 Windows 服务");
+    }
+
+    sb b;
+    sb_init(&b, 256);
+    sb_putf(&b,
+            "{\"ok\":true,\"data\":{\"installed\":%s,\"running\":%s,\"backendIsService\":%s}}",
+            kwifi_service_installed() ? "true" : "false",
+            kwifi_service_running() ? "true" : "false",
+            kwifi_is_service() ? "true" : "false");
+    http_json(s, 200, b.p);
+    sb_free(&b);
+}
 /* ask Windows for administrator rights on demand (one UAC dialog) */
 static void api_elevate(SOCKET s, const char *body, int isPost)
 {
@@ -1528,6 +1558,15 @@ static void api_task(SOCKET s, const char *body, int isPost)
 static void api_quit(SOCKET s, const char *body)
 {
     int stop = j_get_bool(body, "stopHotspot", 1);
+
+    /* as a service the backend outlives the window: closing the interface must
+       not tear down the hotspot or stop the service */
+    if (kwifi_is_service()) {
+        log_add(0, "界面已关闭（服务继续运行）");
+        http_json(s, 200, "{\"ok\":true,\"data\":{\"service\":true}}");
+        return;
+    }
+
     http_json(s, 200, "{\"ok\":true}");
     helper_stop();
     if (stop) {
@@ -1622,6 +1661,7 @@ static void handle_request(SOCKET s)
     if (!strcmp(path, "/api/autostart")) { api_autostart(s, body, isPost); return; }
     if (!strcmp(path, "/api/task")) { api_task(s, body, isPost); return; }
     if (!strcmp(path, "/api/elevate")) { api_elevate(s, body, isPost); return; }
+    if (!strcmp(path, "/api/service")) { api_service(s, body, isPost); return; }
     if (!strcmp(path, "/api/quit")) { api_quit(s, body); return; }
     if (!strcmp(path, "/api/device") || !strcmp(path, "/api/limit")) {
         api_device(s, body, 0);
