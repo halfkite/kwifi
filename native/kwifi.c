@@ -1497,6 +1497,106 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdline, int show)
         }
     }
 
+    /* ---- self test: written for "double click does nothing" -------------
+       Collects everything needed to diagnose a silent start failure into
+       data\selftest.txt and shows the same text, so a user can just report it.
+    */
+    if (wcsstr(cmdline, L"--selftest")) {
+        wchar_t report[8192];
+        int n = 0;
+        wchar_t probe[MAX_PATH * 2];
+
+        n += _snwprintf(report + n, 8192 - n,
+                        L"kwifi self test\n"
+                        L"================\n"
+                        L"exe      : %ls\n"
+                        L"elevated : %ls\n"
+                        L"data dir : %ls\n",
+                        g_exe, is_elevated() ? L"yes" : L"NO (not administrator)",
+                        g_data);
+
+        /* data dir writable? */
+        _snwprintf(probe, MAX_PATH * 2, L"%s\\.selftest", g_data);
+        HANDLE h = CreateFileW(probe, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
+                               FILE_ATTRIBUTE_TEMPORARY, NULL);
+        int writable = (h != INVALID_HANDLE_VALUE);
+        if (writable) { CloseHandle(h); DeleteFileW(probe); }
+        n += _snwprintf(report + n, 8192 - n, L"writable : %ls\n",
+                        writable ? L"yes" : L"NO - settings cannot be saved");
+
+        /* WebView2 loader */
+        wchar_t loader[MAX_PATH * 2];
+        int haveLoader = ensure_wv2_loader(loader, MAX_PATH * 2);
+        n += _snwprintf(report + n, 8192 - n, L"loader   : %ls\n",
+                        haveLoader ? loader : L"MISSING");
+
+        /* WebView2 runtime version from the registry */
+        {
+            wchar_t ver[128] = {0};
+            DWORD cb = sizeof(ver);
+            const wchar_t *key =
+                L"SOFTWARE\\WOW6432Node\\Microsoft\\EdgeUpdate\\Clients\\"
+                L"{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}";
+            LONG rc = RegGetValueW(HKEY_LOCAL_MACHINE, key, L"pv", RRF_RT_REG_SZ,
+                                   NULL, ver, &cb);
+            if (rc != ERROR_SUCCESS) {
+                cb = sizeof(ver);
+                rc = RegGetValueW(HKEY_CURRENT_USER,
+                                  L"SOFTWARE\\Microsoft\\EdgeUpdate\\Clients\\"
+                                  L"{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}",
+                                  L"pv", RRF_RT_REG_SZ, NULL, ver, &cb);
+            }
+            n += _snwprintf(report + n, 8192 - n, L"webview2 : %ls\n",
+                            rc == ERROR_SUCCESS ? ver : L"NOT INSTALLED");
+        }
+
+        /* is another instance already running? that would make a second start
+           exit silently */
+        HANDLE existing = OpenMutexW(SYNCHRONIZE, FALSE, L"Local\\KwifiShell");
+        n += _snwprintf(report + n, 8192 - n, L"instance : %ls\n",
+                        existing ? L"already running (second start exits silently)"
+                                 : L"none");
+        if (existing) CloseHandle(existing);
+
+        /* can the port be bound? */
+        WSADATA wsa;
+        int portOk = 0;
+        if (WSAStartup(MAKEWORD(2, 2), &wsa) == 0) {
+            SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+            if (s != INVALID_SOCKET) {
+                BOOL yes = TRUE;
+                setsockopt(s, SOL_SOCKET, SO_REUSEADDR, (const char *)&yes, sizeof(yes));
+                struct sockaddr_in a;
+                ZeroMemory(&a, sizeof(a));
+                a.sin_family = AF_INET;
+                a.sin_port = htons(g_port);
+                a.sin_addr.s_addr = inet_addr("127.0.0.1");
+                portOk = bind(s, (struct sockaddr *)&a, sizeof(a)) == 0;
+                closesocket(s);
+            }
+            WSACleanup();
+        }
+        n += _snwprintf(report + n, 8192 - n, L"port %u   : %ls\n", (unsigned)g_port,
+                        portOk ? L"free" : L"IN USE");
+
+        n += _snwprintf(report + n, 8192 - n,
+                        L"\nbackend answers: %ls\n",
+                        service_alive() ? L"yes" : L"no");
+
+        _snwprintf(probe, MAX_PATH * 2, L"%s\\selftest.txt", g_data);
+        HANDLE out = CreateFileW(probe, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
+                                 FILE_ATTRIBUTE_NORMAL, NULL);
+        if (out != INVALID_HANDLE_VALUE) {
+            DWORD w = 0;
+            char utf8[8192];
+            int len = WideCharToMultiByte(CP_UTF8, 0, report, -1, utf8, sizeof(utf8), NULL, NULL);
+            WriteFile(out, utf8, (DWORD)(len > 0 ? len - 1 : 0), &w, NULL);
+            CloseHandle(out);
+        }
+
+        MessageBoxW(NULL, report, L"kwifi - self test", MB_ICONINFORMATION | MB_OK);
+        return 0;
+    }
     /* controlling the hotspot needs admin rights; relaunch once with runas and
        mark the child so it never loops.
        --tray (the autostart entry) only asks for elevation when the hotspot is
