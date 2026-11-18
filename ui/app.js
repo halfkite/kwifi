@@ -113,7 +113,7 @@ function createDeviceCard(c) {
     <div class="avatar js-avatar">·</div>
     <div class="device-main">
       <div class="device-name"><span class="js-name">—</span><span class="pill js-pill">在线</span></div>
-      <div class="device-meta"><span class="js-kind">—</span><span class="js-ip"></span><span class="js-mac"></span><span class="js-note"></span><span class="js-rate"></span><button class="js-merge chip-link" hidden></button></div>
+      <div class="device-meta"><span class="js-kind">—</span><span class="js-ip"></span><span class="js-mac"></span><span class="js-note"></span><span class="js-rate"></span><span class="js-drops" hidden></span><button class="js-merge chip-link" hidden></button></div>
     </div>
     <div class="device-actions">
       <button class="icon-btn" data-act="edit" title="改名 / 备注">
@@ -172,10 +172,12 @@ function createDeviceCard(c) {
       method: 'POST',
       body: JSON.stringify({ mac: card.dataset.mac, blocked: !cur?.blocked }),
     });
-    if (!r.ok) toast(r.error || '操作失败', true);
-    else {
+    if (!r.ok) {
+      toast(r.error || '操作失败', true);
+      pollNow();
+    } else {
       toast(r.data.blocked ? '已封禁该设备' : '已解封');
-      if (r.warning) toast(r.warning, true);
+      pollNow();
     }
   });
 
@@ -278,6 +280,21 @@ function updateDeviceCard(card, c) {
 
   const note = card.querySelector('.js-note');
   note.textContent = c.note ? `备注：${c.note}` : '';
+
+  // when blocking is active, show whether the data plane is actually dropping
+  const dropEl = card.querySelector('.js-drops');
+  if (dropEl) {
+    const drops = Number(c.drops || 0);
+    if (c.blocked) {
+      dropEl.hidden = false;
+      dropEl.textContent = drops > 0
+        ? `已拦截 ${drops.toLocaleString()} 个包`
+        : '尚未拦截到流量';
+      dropEl.classList.toggle('warn-text', drops === 0);
+    } else {
+      dropEl.hidden = true;
+    }
+  }
   note.title = c.note || '';
 
   // a history entry can only be removed once the device is gone
@@ -903,7 +920,14 @@ es.onmessage = (ev) => {
   } catch {}
 };
 
-fetch('/api/status').then((r) => r.json()).then((r) => r.data && render(r.data));
+function pollNow() {
+  fetch('/api/status')
+    .then((r) => r.json())
+    .then((r) => r.data && render(r.data))
+    .catch(() => {});
+}
+
+pollNow();
 checkBackend();
 setInterval(checkBackend, 10000);
 window.addEventListener('resize', () => status && renderChart(status.traffic?.history));

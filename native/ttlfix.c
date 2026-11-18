@@ -408,7 +408,17 @@ int main(int argc, char **argv)
             }
         }
 
-        if (!keep) continue;   /* dropped: never re-injected */
+        if (!keep) {
+            /* still keep the config fresh: a rule change must apply even while
+               traffic is being dropped */
+            DWORD reload_now = now_ms();
+            refill_budget(reload_now);
+            if (config_path && reload_now - last_reload >= RELOAD_MS) {
+                last_reload = reload_now;
+                load_config(config_path);
+            }
+            continue;          /* dropped: never re-injected */
+        }
 
         UINT send_len = 0;
         if (!WinDivertSend(wd, packet, packet_len, &send_len, &addr)) {

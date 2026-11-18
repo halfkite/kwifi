@@ -271,6 +271,7 @@ typedef struct {
     int blocked;
     int upMbps, downMbps;
     long long firstSeen, lastSeen;
+    long long drops;      /* packets the data plane dropped for this client */
     int used;
 } device_t;
 
@@ -922,9 +923,11 @@ static void helper_read_stats(void)
                     memcpy(obj, vs, n);
                     obj[n] = 0;
                     int blocked = j_get_int(obj, "blocked", 0);
+                    double drops = j_get_num(obj, "drops", 0);
                     for (int k = 0; k < S.devCount; k++) {
                         if (_stricmp(S.dev[k].ip, ip) == 0) {
-                            S.dev[k].blocked = blocked ? 1 : S.dev[k].blocked;
+                            if (blocked) S.dev[k].blocked = 1;
+                            S.dev[k].drops = (long long)drops;
                         }
                     }
                     p = j_skip_ws(ve);
@@ -1090,6 +1093,7 @@ static void build_status(sb *b)
             sb_putf(b, ",\"upMbps\":%d,\"downMbps\":%d", d ? d->upMbps : 0, d ? d->downMbps : 0);
             sb_putf(b, ",\"upKbps\":%d,\"downKbps\":%d", d ? d->upMbps * 1000 : 0, d ? d->downMbps * 1000 : 0);
             sb_puts(b, ",\"online\":true");
+            sb_putf(b, ",\"drops\":%lld", d ? d->drops : 0);
             sb_putf(b, ",\"lastSeen\":%lld", d ? d->lastSeen : 0);
             if (d && d->aliasTo[0]) { sb_puts(b, ",\"aliasTo\":"); sb_json_str(b, d->aliasTo); }
             else sb_puts(b, ",\"aliasTo\":null");
@@ -1177,6 +1181,7 @@ static void build_status(sb *b)
         sb_puts(b, "}");
     }
     sb_puts(b, "]");
+    sb_putf(b, ",\"dataplane\":%s", helper_alive() ? "true" : "false");
     sb_putf(b, ",\"ts\":%lld}}", (long long)time(NULL) * 1000);
 
     LeaveCriticalSection(&S.cs);
@@ -1431,12 +1436,16 @@ static void api_device(SOCKET s, const char *body, int blockAlias)
         helper_stop();
     }
 
-    /* a rule nobody enforces is worse than no rule: say so explicitly */
-    const char *warning = NULL;
+    /* a rule nobody enforces is worse than no rule: refuse to report success */
     if (wantBlock == 1 && !helper_alive()) {
-        warning = "数据面没能启动，封禁不会生效。请用管理员权限运行，或在设置里安装后台服务。";
-    } else if (wantBlock == 0 && !helper_alive() && any_rules()) {
-        warning = "数据面没能启动，封禁和限速都不会生效。";
+        sb e;
+        sb_init(&e, 512);
+        sb_puts(&e, "{\"ok\":false,\"error\":");
+        sb_json_str(&e, "数据面没有运行，封禁不会生效。请用管理员权限运行，或在设置里安装后台服务。");
+        sb_puts(&e, ",\"dataplane\":false}");
+        http_json(s, 200, e.p);
+        sb_free(&e);
+        return;
     }
 
     sb b;
@@ -1446,12 +1455,7 @@ static void api_device(SOCKET s, const char *body, int blockAlias)
     sb_puts(&b, ",\"blocked\":"); sb_puts(&b, d->blocked ? "true" : "false");
     sb_putf(&b, ",\"prio\":%d,\"upMbps\":%d,\"downMbps\":%d", d->prio, d->upMbps, d->downMbps);
     sb_putf(&b, ",\"dataplane\":%s", helper_alive() ? "true" : "false");
-    sb_puts(&b, "},\"warnings\":[]");
-    if (warning) {
-        sb_puts(&b, ",\"warning\":");
-        sb_json_str(&b, warning);
-    }
-    sb_puts(&b, "}");
+    sb_puts(&b, "},\"warnings\":[]}");
     http_json(s, 200, b.p);
     sb_free(&b);
 }
